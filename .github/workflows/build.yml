@@ -1,0 +1,63 @@
+name: Build Multi Snip
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish (standalone, no .NET install needed)
+        run: >
+          dotnet publish src/MultiSnip/MultiSnip.csproj -c Release -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -o publish/standalone
+
+      - name: Publish (small, requires .NET 8 Desktop Runtime)
+        run: >
+          dotnet publish src/MultiSnip/MultiSnip.csproj -c Release -r win-x64
+          --self-contained false
+          -p:PublishSingleFile=true
+          -o publish/framework-dependent
+
+      - name: Show file properties (metadata check)
+        shell: pwsh
+        run: |
+          $v = (Get-Item publish/standalone/MultiSnip.exe).VersionInfo
+          $v | Format-List FileDescription, FileVersion, ProductName, ProductVersion, CompanyName, LegalCopyright
+          if ($v.ProductName -ne 'Multi Snip application by WebProgress.AI') { throw "Unexpected ProductName: $($v.ProductName)" }
+          if ($v.FileDescription -ne 'Multi Snip tool for better productivity') { throw "Unexpected FileDescription: $($v.FileDescription)" }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Compress-Archive -Path publish/standalone/MultiSnip.exe -DestinationPath artifacts/MultiSnip-win-x64.zip
+          Compress-Archive -Path publish/framework-dependent/MultiSnip.exe -DestinationPath artifacts/MultiSnip-win-x64-small.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MultiSnip-win-x64
+          path: artifacts/*.zip
+
+      - name: Create GitHub release (on version tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip

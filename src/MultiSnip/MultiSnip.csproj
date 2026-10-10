@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationVisualStyles>true</ApplicationVisualStyles>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <AssemblyName>MultiSnip</AssemblyName>
+    <RootNamespace>MultiSnip</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    Application metadata shown in Explorer > Properties > Details.
+    Bump <Version> for every release and add an entry to CHANGELOG.md.
+  -->
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <InformationalVersion>1.0.0</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+
+    <!-- "File description" -->
+    <AssemblyTitle>Multi Snip tool for better productivity</AssemblyTitle>
+    <!-- "Product name" -->
+    <Product>Multi Snip application by WebProgress.AI</Product>
+    <Company>WebProgress.AI</Company>
+    <Authors>WebProgress.AI</Authors>
+    <!-- "Copyright" -->
+    <Copyright>Copyright © 2026 WebProgress.AI (idea and IP initiator). All rights reserved.</Copyright>
+    <Description>Capture multiple screen snips and combine them vertically, horizontally or in a grid into a single image.</Description>
+    <NeutralLanguage>en-US</NeutralLanguage>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\app.ico" LogicalName="MultiSnip.app.ico" />
+  </ItemGroup>
+
+</Project>
