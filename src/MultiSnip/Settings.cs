@@ -19,6 +19,9 @@ public sealed class Settings
     public int DelaySeconds { get; set; }
     public bool KeepSnipping { get; set; }
     public bool FitPreview { get; set; } = true;
+
+    /// <summary>Global snip hotkey (key code + Control/Alt/Shift flags); Keys.None turns it off.</summary>
+    public Keys SnipHotkey { get; set; } = Hotkey.Default;
     public string? LastSaveFolder { get; set; }
 
     private static string FilePath => Path.Combine(

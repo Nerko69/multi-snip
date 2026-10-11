@@ -4,11 +4,12 @@
 combines them into one image (vertically, horizontally or as a grid), so you no longer have to paste
 screenshots into Paint and line them up by hand.
 
-Current version: **1.0.0** (see [CHANGELOG.md](CHANGELOG.md)).
+Current version: **1.1.0** (see [CHANGELOG.md](CHANGELOG.md)).
 
 ## How to use
 
 1. Click **✂ New Snip** (or press **Ctrl+N**, or **Ctrl+Shift+S** from anywhere in Windows) and drag a rectangle.
+   To use a different global hotkey, click **⌨ Hotkey…** and press the combination you want.
    Repeat for every piece you need. Turn on **Keep snipping** to take several in a row (Esc to stop).
 2. Reorder the snips by dragging them in the list (or Ctrl+Up / Ctrl+Down).
 3. Choose **Vertical**, **Horizontal** or **Grid**, then adjust alignment, spacing, margin, background, border and
@@ -20,7 +21,7 @@ You can also add existing images with **Paste** (Ctrl+V), **Open…** (Ctrl+O), 
 
 | Shortcut | Action |
 |---|---|
-| Ctrl+Shift+S | Snip from anywhere (global hotkey, works while minimized) |
+| Ctrl+Shift+S | Snip from anywhere (global hotkey, works while minimized; change it with **⌨ Hotkey…**) |
 | Ctrl+N / Ctrl+Shift+N | New snip / full-screen snip |
 | Enter / Esc (in overlay) | Snip whole screen / cancel (or finish "Keep snipping") |
 | Ctrl+V, Ctrl+O | Paste image, open images |
@@ -52,9 +53,9 @@ Build on Windows (or in the GitHub Action). The SDK only writes the file-propert
 | Field | Value |
 |---|---|
 | File description | Multi Snip tool for better productivity |
-| File version | 1.0.0.0 |
+| File version | 1.1.0.0 |
 | Product name | Multi Snip application by WebProgress.AI |
-| Product version | 1.0.0 |
+| Product version | 1.1.0 |
 | Copyright | Copyright © 2026 WebProgress.AI (idea and IP initiator). All rights reserved. |
 | Company | WebProgress.AI |
 

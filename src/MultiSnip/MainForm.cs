@@ -26,7 +26,6 @@ public sealed class SnipItem : IDisposable
 public sealed class MainForm : Form
 {
     private const int HotkeyId = 0x5A01;
-    private const string HotkeyText = "Ctrl+Shift+S";
     private const string InternalDragFormat = "MultiSnip.ItemIndex";
 
     private readonly Settings _settings = Settings.Load();
@@ -36,6 +35,7 @@ public sealed class MainForm : Form
     private bool _snipping;
     private bool _loadingUi;
     private bool _hotkeyRegistered;
+    private readonly ToolStripStatusLabel _hotkeyStatus = new() { IsLink = true, ToolTipText = "Click to change the global snip hotkey" };
 
     // UI
     private readonly ToolStrip _toolbar = new();
@@ -90,7 +90,8 @@ public sealed class MainForm : Form
 
         var statusStrip = new StatusStrip();
         statusStrip.Items.Add(_status);
-        statusStrip.Items.Add(new ToolStripStatusLabel($"Global hotkey: {HotkeyText}") { ForeColor = SystemColors.GrayText });
+        _hotkeyStatus.Click += (_, _) => ChangeHotkey();
+        statusStrip.Items.Add(_hotkeyStatus);
 
         Controls.Add(split);
         Controls.Add(_toolbar);
@@ -139,9 +140,12 @@ public sealed class MainForm : Form
         _toolbar.Items.Add(new ToolStripSeparator());
         _toolbar.Items.Add(Button("🗑  Clear All", "Remove all snips", ClearAll));
 
-        var about = Button("About", "About Multi Snip", () => { using var f = new AboutForm(); f.ShowDialog(this); });
+        var about = Button("About", "About Multi Snip", () => { using var f = new AboutForm(HotkeyText); f.ShowDialog(this); });
         about.Alignment = ToolStripItemAlignment.Right;
         _toolbar.Items.Add(about);
+        var hotkey = Button("⌨  Hotkey…", "Change the global snip hotkey", ChangeHotkey);
+        hotkey.Alignment = ToolStripItemAlignment.Right;
+        _toolbar.Items.Add(hotkey);
     }
 
     private static ToolStripButton Button(string text, string tip, Action onClick)
@@ -271,11 +275,6 @@ public sealed class MainForm : Form
         _emptyHint.TextAlign = ContentAlignment.MiddleCenter;
         _emptyHint.ForeColor = Color.Gainsboro;
         _emptyHint.Font = new Font(Font.FontFamily, 12f);
-        _emptyHint.Text =
-            "Click  ✂ New Snip  (Ctrl+N)  to capture part of the screen.\n\n" +
-            $"Press  {HotkeyText}  anywhere in Windows to snip, even when this window is minimized.\n\n" +
-            "You can also paste (Ctrl+V), open, or drag & drop images here.\n\n" +
-            "Then choose Vertical / Horizontal / Grid and Copy or Save the combined image.";
         _previewPanel.Controls.Add(_emptyHint);
 
         var container = new Panel { Dock = DockStyle.Fill };
@@ -309,11 +308,11 @@ public sealed class MainForm : Form
         menu.Items.Add("New Snip", null, async (_, _) => await SnipAsync(false));
         menu.Items.Add("Full Screen Snip", null, async (_, _) => await SnipAsync(true));
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Change Hotkey…", null, (_, _) => { ShowAndActivate(); ChangeHotkey(); });
         menu.Items.Add("Show Multi Snip", null, (_, _) => ShowAndActivate());
         menu.Items.Add("Exit", null, (_, _) => Close());
         _tray.ContextMenuStrip = menu;
         _tray.Icon = new Icon(Icon!, SystemInformation.SmallIconSize);
-        _tray.Text = $"Multi Snip — {HotkeyText} to snip";
         _tray.Visible = true;
         _tray.DoubleClick += (_, _) => ShowAndActivate();
         _tray.BalloonTipClicked += (_, _) => ShowAndActivate();
@@ -879,23 +878,78 @@ public sealed class MainForm : Form
         BringToFront();
     }
 
+    private string HotkeyText => Hotkey.Format(_settings.SnipHotkey);
+
+    /// <summary>Registers <paramref name="keys"/> as the global hotkey. Returns false if Windows refuses it.</summary>
+    private bool RegisterSnipHotkey(Keys keys)
+    {
+        UnregisterSnipHotkey();
+        if (keys == Keys.None || !IsHandleCreated) return keys == Keys.None;
+        _hotkeyRegistered = NativeMethods.RegisterHotKey(Handle, HotkeyId, Hotkey.Modifiers(keys), (uint)(keys & Keys.KeyCode));
+        return _hotkeyRegistered;
+    }
+
+    private void UnregisterSnipHotkey()
+    {
+        if (_hotkeyRegistered && IsHandleCreated) NativeMethods.UnregisterHotKey(Handle, HotkeyId);
+        _hotkeyRegistered = false;
+    }
+
+    private void ChangeHotkey()
+    {
+        Keys previous = _settings.SnipHotkey;
+        UnregisterSnipHotkey(); // so pressing the current hotkey in the dialog doesn't start a snip
+        using var dlg = new HotkeyDialog(previous, keys =>
+            RegisterSnipHotkey(keys) ? null
+                : $"{Hotkey.Format(keys)} is already used by Windows or another app. Please choose another combination.");
+        if (dlg.ShowDialog(this) == DialogResult.OK)
+        {
+            _settings.SnipHotkey = dlg.Selected;
+            _settings.Save();
+            SetStatus(dlg.Selected == Keys.None ? "Global hotkey turned off." : $"Global hotkey set to {HotkeyText}.");
+        }
+        else
+        {
+            RegisterSnipHotkey(previous);
+        }
+        UpdateHotkeyTexts();
+    }
+
+    /// <summary>Refreshes every place that mentions the hotkey (status bar, tray tooltip, empty-state hint).</summary>
+    private void UpdateHotkeyTexts()
+    {
+        bool off = _settings.SnipHotkey == Keys.None;
+        _hotkeyStatus.Text = off ? "Global hotkey: off"
+            : _hotkeyRegistered ? $"Global hotkey: {HotkeyText}"
+            : $"Global hotkey: {HotkeyText} (unavailable)";
+        string tray = off ? "Multi Snip" : $"Multi Snip — {HotkeyText} to snip";
+        _tray.Text = tray.Length > 63 ? tray[..63] : tray; // NotifyIcon text limit
+        _emptyHint.Text =
+            "Click  ✂ New Snip  (Ctrl+N)  to capture part of the screen.\n\n" +
+            (off ? "Set a global hotkey with  ⌨ Hotkey…  to snip from anywhere in Windows.\n\n"
+                 : $"Press  {HotkeyText}  anywhere in Windows to snip, even when this window is minimized.\n\n") +
+            "You can also paste (Ctrl+V), open, or drag & drop images here.\n\n" +
+            "Then choose Vertical / Horizontal / Grid and Copy or Save the combined image.";
+    }
+
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        _hotkeyRegistered = NativeMethods.RegisterHotKey(Handle, HotkeyId,
-            NativeMethods.MOD_CONTROL | NativeMethods.MOD_SHIFT | NativeMethods.MOD_NOREPEAT, (uint)Keys.S);
+        if (Hotkey.Validate(_settings.SnipHotkey) != null) _settings.SnipHotkey = Hotkey.Default; // hand-edited settings
+        RegisterSnipHotkey(_settings.SnipHotkey);
     }
 
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        if (!_hotkeyRegistered)
-            SetStatus($"Note: {HotkeyText} is used by another app, so the global hotkey is unavailable. Use the New Snip button.");
+        UpdateHotkeyTexts();
+        if (!_hotkeyRegistered && _settings.SnipHotkey != Keys.None)
+            SetStatus($"Note: {HotkeyText} is used by another app, so the global hotkey is unavailable. Click ⌨ Hotkey… to pick another.");
     }
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
-        if (_hotkeyRegistered) NativeMethods.UnregisterHotKey(Handle, HotkeyId);
+        UnregisterSnipHotkey();
         base.OnHandleDestroyed(e);
     }
 

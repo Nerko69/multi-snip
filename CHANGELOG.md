@@ -4,6 +4,17 @@ All notable changes to Multi Snip (by WebProgress.AI). The version is set in
 `src/MultiSnip/MultiSnip.csproj` (`<Version>`, `<FileVersion>`, `<AssemblyVersion>`);
 bump it there and add an entry here for every release.
 
+## [1.1.0] - 2026-10-11
+
+### Added
+- Configurable global snip hotkey: click **⌨ Hotkey…** in the toolbar (or the hotkey in the status bar, or
+  "Change Hotkey…" in the tray menu) and press the combination you want. Backspace turns the hotkey off;
+  "Reset" restores Ctrl+Shift+S. Combinations already taken by Windows/another app, or by Multi Snip's own
+  shortcuts, are rejected with an explanation. The choice is remembered.
+
+### Changed
+- Default global hotkey is **Ctrl+Shift+S**.
+
 ## [1.0.0] - 2026-10-10
 
 ### Added

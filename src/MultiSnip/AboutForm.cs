@@ -2,7 +2,7 @@ namespace MultiSnip;
 
 public sealed class AboutForm : Form
 {
-    public AboutForm()
+    public AboutForm(string snipHotkey)
     {
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -37,7 +37,7 @@ public sealed class AboutForm : Form
                 $"{AppInfo.Copyright}\n\n" +
                 "Shortcuts\n" +
                 "  Ctrl+N  New snip          Ctrl+Shift+N  Full-screen snip\n" +
-                "  Ctrl+Shift+S  Snip from anywhere (global)\n" +
+                $"  {snipHotkey}  Snip from anywhere (global, change via ⌨ Hotkey…)\n" +
                 "  Ctrl+V  Paste image       Ctrl+O  Open images\n" +
                 "  Ctrl+C  Copy combined     Ctrl+S  Save combined\n" +
                 "  Ctrl+Up/Down  Reorder     Delete  Remove snip\n" +
