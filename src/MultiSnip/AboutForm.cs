@@ -37,7 +37,7 @@ public sealed class AboutForm : Form
                 $"{AppInfo.Copyright}\n\n" +
                 "Shortcuts\n" +
                 "  Ctrl+N  New snip          Ctrl+Shift+N  Full-screen snip\n" +
-                "  Ctrl+Alt+S  Snip from anywhere (global)\n" +
+                "  Ctrl+Shift+S  Snip from anywhere (global)\n" +
                 "  Ctrl+V  Paste image       Ctrl+O  Open images\n" +
                 "  Ctrl+C  Copy combined     Ctrl+S  Save combined\n" +
                 "  Ctrl+Up/Down  Reorder     Delete  Remove snip\n" +

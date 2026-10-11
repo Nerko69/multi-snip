@@ -26,7 +26,7 @@ public sealed class SnipItem : IDisposable
 public sealed class MainForm : Form
 {
     private const int HotkeyId = 0x5A01;
-    private const string HotkeyText = "Ctrl+Alt+S";
+    private const string HotkeyText = "Ctrl+Shift+S";
     private const string InternalDragFormat = "MultiSnip.ItemIndex";
 
     private readonly Settings _settings = Settings.Load();
@@ -883,7 +883,7 @@ public sealed class MainForm : Form
     {
         base.OnHandleCreated(e);
         _hotkeyRegistered = NativeMethods.RegisterHotKey(Handle, HotkeyId,
-            NativeMethods.MOD_CONTROL | NativeMethods.MOD_ALT | NativeMethods.MOD_NOREPEAT, (uint)Keys.S);
+            NativeMethods.MOD_CONTROL | NativeMethods.MOD_SHIFT | NativeMethods.MOD_NOREPEAT, (uint)Keys.S);
     }
 
     protected override void OnShown(EventArgs e)

@@ -8,7 +8,7 @@ Current version: **1.0.0** (see [CHANGELOG.md](CHANGELOG.md)).
 
 ## How to use
 
-1. Click **✂ New Snip** (or press **Ctrl+N**, or **Ctrl+Alt+S** from anywhere in Windows) and drag a rectangle.
+1. Click **✂ New Snip** (or press **Ctrl+N**, or **Ctrl+Shift+S** from anywhere in Windows) and drag a rectangle.
    Repeat for every piece you need. Turn on **Keep snipping** to take several in a row (Esc to stop).
 2. Reorder the snips by dragging them in the list (or Ctrl+Up / Ctrl+Down).
 3. Choose **Vertical**, **Horizontal** or **Grid**, then adjust alignment, spacing, margin, background, border and
@@ -20,7 +20,7 @@ You can also add existing images with **Paste** (Ctrl+V), **Open…** (Ctrl+O), 
 
 | Shortcut | Action |
 |---|---|
-| Ctrl+Alt+S | Snip from anywhere (global hotkey, works while minimized) |
+| Ctrl+Shift+S | Snip from anywhere (global hotkey, works while minimized) |
 | Ctrl+N / Ctrl+Shift+N | New snip / full-screen snip |
 | Enter / Esc (in overlay) | Snip whole screen / cancel (or finish "Keep snipping") |
 | Ctrl+V, Ctrl+O | Paste image, open images |

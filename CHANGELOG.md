@@ -11,7 +11,7 @@ bump it there and add an entry here for every release.
 - Full-screen snip of the monitor under the mouse; Enter in the overlay does the same.
 - "Keep snipping" mode: take several snips in a row, Esc to finish.
 - Optional capture delay (3 / 5 / 10 seconds) for menus and tooltips.
-- Global hotkey **Ctrl+Alt+S** that snips even while the app is minimized or in the tray.
+- Global hotkey **Ctrl+Shift+S** that snips even while the app is minimized or in the tray.
 - Snip list with thumbnails: drag to reorder, move up/down/top/bottom, remove, copy or save one snip.
 - Combine **vertically**, **horizontally** or in a **grid** (choose the number of columns), with live preview.
 - Options: alignment, spacing, outer margin, background color or transparent, per-snip border (color/width),
