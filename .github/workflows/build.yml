@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Also create a GitHub release with this tag, e.g. v1.1.0 (must match <Version> in MultiSnip.csproj). Leave empty to only build."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -56,8 +61,34 @@ jobs:
           name: MultiSnip-win-x64
           path: artifacts/*.zip
 
-      - name: Create GitHub release (on version tags)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Prepare release notes
+        id: notes
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+        shell: pwsh
+        env:
+          TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          [xml]$proj = Get-Content src/MultiSnip/MultiSnip.csproj
+          $version = ($proj.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1).Version
+          if ($env:TAG -ne "v$version") { throw "Tag $env:TAG does not match project version $version" }
+          # Release notes = this version's section of CHANGELOG.md
+          [string[]]$lines = Get-Content CHANGELOG.md
+          $start = -1; $end = $lines.Length
+          for ($i = 0; $i -lt $lines.Length; $i++) {
+            if ($start -lt 0) { if ($lines[$i].StartsWith("## [$version]")) { $start = $i } }
+            elseif ($lines[$i].StartsWith('## ')) { $end = $i; break }
+          }
+          if ($start -lt 0) { throw "CHANGELOG.md has no section for $version" }
+          $notes = @($lines[($start + 1)..($end - 1)]) + @('', 'Downloads:', '- `MultiSnip-win-x64.zip`: single `MultiSnip.exe`, no install needed.', '- `MultiSnip-win-x64-small.zip`: small `MultiSnip.exe`, needs the .NET 8 Desktop Runtime.')
+          $notes | Set-Content artifacts/release-notes.md
+          "tag=$env:TAG" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        if: steps.notes.outcome == 'success'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.notes.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Multi Snip ${{ steps.notes.outputs.tag }}
+          body_path: artifacts/release-notes.md
           files: artifacts/*.zip
