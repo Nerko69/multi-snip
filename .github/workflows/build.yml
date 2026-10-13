@@ -25,6 +25,9 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Test scrolling-capture stitcher
+        run: dotnet run -c Release --project tests/ScrollStitcher.Tests
+
       - name: Publish (standalone, no .NET install needed)
         run: >
           dotnet publish src/MultiSnip/MultiSnip.csproj -c Release -r win-x64

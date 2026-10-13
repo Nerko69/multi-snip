@@ -4,13 +4,16 @@
 combines them into one image (vertically, horizontally or as a grid), so you no longer have to paste
 screenshots into Paint and line them up by hand.
 
-Current version: **1.1.0** (see [CHANGELOG.md](CHANGELOG.md)).
+Current version: **1.2.0** (see [CHANGELOG.md](CHANGELOG.md)).
 
 ## How to use
 
 1. Click **✂ New Snip** (or press **Ctrl+N**, or **Ctrl+Shift+S** from anywhere in Windows) and drag a rectangle.
    To use a different global hotkey, click **⌨ Hotkey…** and press the combination you want.
    Repeat for every piece you need. Turn on **Keep snipping** to take several in a row (Esc to stop).
+   For a whole page that doesn't fit on screen, use **📜 Scrolling** (Ctrl+Shift+R): select the part of the window
+   that scrolls (e.g. the web page below the address bar). Multi Snip scrolls it down and stitches it into one
+   image; press Esc to stop early. By default it scrolls to the top first (toggle in the button's drop-down).
 2. Reorder the snips by dragging them in the list (or Ctrl+Up / Ctrl+Down).
 3. Choose **Vertical**, **Horizontal** or **Grid**, then adjust alignment, spacing, margin, background, border and
    "Match sizes". The preview updates as you change them.
@@ -23,6 +26,7 @@ You can also add existing images with **Paste** (Ctrl+V), **Open…** (Ctrl+O), 
 |---|---|
 | Ctrl+Shift+S | Snip from anywhere (global hotkey, works while minimized; change it with **⌨ Hotkey…**) |
 | Ctrl+N / Ctrl+Shift+N | New snip / full-screen snip |
+| Ctrl+Shift+R | Scrolling capture (whole page) |
 | Enter / Esc (in overlay) | Snip whole screen / cancel (or finish "Keep snipping") |
 | Ctrl+V, Ctrl+O | Paste image, open images |
 | Ctrl+C, Ctrl+S | Copy / save combined image |
@@ -53,9 +57,9 @@ Build on Windows (or in the GitHub Action). The SDK only writes the file-propert
 | Field | Value |
 |---|---|
 | File description | Multi Snip tool for better productivity |
-| File version | 1.1.0.0 |
+| File version | 1.2.0.0 |
 | Product name | Multi Snip application by WebProgress.AI |
-| Product version | 1.1.0 |
+| Product version | 1.2.0 |
 | Copyright | Copyright © 2026 WebProgress.AI (idea and IP initiator). All rights reserved. |
 | Company | WebProgress.AI |
 
@@ -66,6 +70,8 @@ These live in `src/MultiSnip/MultiSnip.csproj`. To release a new version, bump `
 
 - `src/MultiSnip/MainForm.cs` — main window: snip list, combine options, preview, clipboard/save, hotkey, tray icon
 - `src/MultiSnip/SnipOverlayForm.cs` — full-screen selection overlay (multi-monitor, high-DPI aware)
+- `src/MultiSnip/ScrollingCapture.cs`, `ScrollStitcher.cs` — scrolling capture and frame stitching
+- `tests/ScrollStitcher.Tests` — stitching tests (run in CI)
 - `src/MultiSnip/ImageCombiner.cs` — vertical / horizontal / grid combining logic
 - `src/MultiSnip/Settings.cs` — remembered preferences
 - `tools/make_icon.py` — regenerates the app icon

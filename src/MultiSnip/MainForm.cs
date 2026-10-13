@@ -23,6 +23,8 @@ public sealed class SnipItem : IDisposable
     }
 }
 
+public enum SnipMode { Region, FullScreen, Scrolling }
+
 public sealed class MainForm : Form
 {
     private const int HotkeyId = 0x5A01;
@@ -35,6 +37,7 @@ public sealed class MainForm : Form
     private bool _snipping;
     private bool _loadingUi;
     private bool _hotkeyRegistered;
+    private string? _pendingNote; // extra info shown once with the next status update
     private readonly ToolStripStatusLabel _hotkeyStatus = new() { IsLink = true, ToolTipText = "Click to change the global snip hotkey" };
 
     // UI
@@ -115,8 +118,9 @@ public sealed class MainForm : Form
         _toolbar.Padding = new Padding(4, 2, 4, 2);
         _toolbar.ImageScalingSize = new Size(20, 20);
 
-        _toolbar.Items.Add(Button("✂  New Snip", "Drag a rectangle to snip (Ctrl+N)", async () => await SnipAsync(false)));
-        _toolbar.Items.Add(Button("🖥  Full Screen", "Snip the whole screen the mouse is on (Ctrl+Shift+N)", async () => await SnipAsync(true)));
+        _toolbar.Items.Add(Button("✂  New Snip", "Drag a rectangle to snip (Ctrl+N)", async () => await SnipAsync(SnipMode.Region)));
+        _toolbar.Items.Add(Button("🖥  Full Screen", "Snip the whole screen the mouse is on (Ctrl+Shift+N)", async () => await SnipAsync(SnipMode.FullScreen)));
+        _toolbar.Items.Add(BuildScrollingButton());
         _toolbar.Items.Add(new ToolStripLabel("Delay:"));
         _delayCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         _delayCombo.Items.AddRange(new object[] { "None", "3 sec", "5 sec", "10 sec" });
@@ -146,6 +150,22 @@ public sealed class MainForm : Form
         var hotkey = Button("⌨  Hotkey…", "Change the global snip hotkey", ChangeHotkey);
         hotkey.Alignment = ToolStripItemAlignment.Right;
         _toolbar.Items.Add(hotkey);
+    }
+
+    private ToolStripSplitButton BuildScrollingButton()
+    {
+        var b = new ToolStripSplitButton("📜  Scrolling")
+        {
+            DisplayStyle = ToolStripItemDisplayStyle.Text,
+            ToolTipText = "Capture a whole page, not just the visible part (Ctrl+Shift+R).\n" +
+                          "Select the area that scrolls; Multi Snip scrolls it down and stitches everything into one image.\n" +
+                          "Press Esc to stop early.",
+        };
+        b.ButtonClick += async (_, _) => await SnipAsync(SnipMode.Scrolling);
+        var fromTop = new ToolStripMenuItem("Scroll to the top first") { CheckOnClick = true, Checked = _settings.ScrollToTopFirst };
+        fromTop.CheckedChanged += (_, _) => _settings.ScrollToTopFirst = fromTop.Checked;
+        b.DropDownItems.Add(fromTop);
+        return b;
     }
 
     private static ToolStripButton Button(string text, string tip, Action onClick)
@@ -305,8 +325,9 @@ public sealed class MainForm : Form
     private void BuildTray()
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add("New Snip", null, async (_, _) => await SnipAsync(false));
-        menu.Items.Add("Full Screen Snip", null, async (_, _) => await SnipAsync(true));
+        menu.Items.Add("New Snip", null, async (_, _) => await SnipAsync(SnipMode.Region));
+        menu.Items.Add("Full Screen Snip", null, async (_, _) => await SnipAsync(SnipMode.FullScreen));
+        menu.Items.Add("Scrolling Capture (whole page)", null, async (_, _) => await SnipAsync(SnipMode.Scrolling));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Change Hotkey…", null, (_, _) => { ShowAndActivate(); ChangeHotkey(); });
         menu.Items.Add("Show Multi Snip", null, (_, _) => ShowAndActivate());
@@ -398,12 +419,13 @@ public sealed class MainForm : Form
 
     // ------------------------------------------------------------------ snipping
 
-    private async Task SnipAsync(bool fullScreen)
+    private async Task SnipAsync(SnipMode mode)
     {
         if (_snipping) return;
         _snipping = true;
         bool windowWasVisible = Visible && WindowState != FormWindowState.Minimized;
         int added = 0;
+        string? note = null;
         try
         {
             if (windowWasVisible) Opacity = 0; // get out of the way of the screenshot
@@ -415,9 +437,10 @@ public sealed class MainForm : Form
                 delayMs = 0;
 
                 Bitmap? result;
+                Rectangle area = Rectangle.Empty;
                 using (Bitmap screen = SnipOverlayForm.CaptureVirtualScreen(out Rectangle virtualBounds))
                 {
-                    if (fullScreen)
+                    if (mode == SnipMode.FullScreen)
                     {
                         Rectangle b = Screen.FromPoint(Cursor.Position).Bounds;
                         b.Offset(-virtualBounds.X, -virtualBounds.Y);
@@ -426,19 +449,36 @@ public sealed class MainForm : Form
                     }
                     else
                     {
-                        string hint = _settings.KeepSnipping
-                            ? $"Snip #{_snips.Count + 1}: drag to select · Esc to finish"
-                            : "Drag to select · Enter = whole screen · Esc to cancel";
+                        string hint = mode == SnipMode.Scrolling
+                            ? "Scrolling capture: select the area that scrolls (e.g. the web page content) · Esc to cancel"
+                            : _settings.KeepSnipping
+                                ? $"Snip #{_snips.Count + 1}: drag to select · Esc to finish"
+                                : "Drag to select · Enter = whole screen · Esc to cancel";
                         using var overlay = new SnipOverlayForm(screen, virtualBounds, hint);
                         overlay.ShowDialog();
                         result = overlay.Result;
+                        area = overlay.SelectedScreenArea;
                     }
                 }
 
                 if (result == null) break;
-                AddSnip(new SnipItem(result, fullScreen ? "Screen" : "Snip"));
+
+                if (mode == SnipMode.Scrolling)
+                {
+                    result.Dispose(); // only the area was needed; it is captured live while scrolling
+                    await Task.Delay(250); // let the overlay disappear
+                    var outcome = await ScrollingCapture.RunAsync(area, _settings.ScrollToTopFirst);
+                    result = outcome.Image;
+                    note = $"Scrolling capture: {outcome.Frames} screen(s) stitched, {result.Width} × {result.Height} px" +
+                           (outcome.StoppedByUser ? " (stopped with Esc)" : "") +
+                           (outcome.HitLimit ? " (stopped at the maximum length)" : "") +
+                           (outcome.UnmatchedSteps > 0 ? $". {outcome.UnmatchedSteps} step(s) could not be aligned exactly; check the result." : ".");
+                }
+
+                _pendingNote = note;
+                AddSnip(new SnipItem(result, mode.ToString()));
                 added++;
-                if (fullScreen || !_settings.KeepSnipping) break;
+                if (mode != SnipMode.Region || !_settings.KeepSnipping) break;
             }
         }
         catch (Exception ex)
@@ -456,7 +496,7 @@ public sealed class MainForm : Form
             else if (added > 0)
             {
                 _tray.ShowBalloonTip(2000, "Multi Snip",
-                    $"{added} snip(s) added — {_snips.Count} in total. Click to combine.", ToolTipIcon.Info);
+                    note ?? $"{added} snip(s) added — {_snips.Count} in total. Click to combine.", ToolTipIcon.Info);
             }
         }
     }
@@ -844,7 +884,9 @@ public sealed class MainForm : Form
         ApplyPreviewMode();
         SetStatus(empty
             ? "No snips yet."
-            : $"{_snips.Count} snip(s) · combined image {_combined!.Width} × {_combined.Height} px");
+            : $"{_snips.Count} snip(s) · combined image {_combined!.Width} × {_combined.Height} px" +
+              (_pendingNote != null ? " · " + _pendingNote : ""));
+        _pendingNote = null;
     }
 
     private void ApplyPreviewMode()
@@ -957,7 +999,7 @@ public sealed class MainForm : Form
     {
         if (m.Msg == NativeMethods.WM_HOTKEY && m.WParam == (IntPtr)HotkeyId)
         {
-            _ = SnipAsync(false);
+            _ = SnipAsync(SnipMode.Region);
             return;
         }
         if (m.Msg == NativeMethods.WM_SHOWME && NativeMethods.WM_SHOWME != 0)
@@ -973,8 +1015,9 @@ public sealed class MainForm : Form
         bool editingText = FocusedControl() is TextBoxBase or UpDownBase || FocusedControl()?.Parent is UpDownBase;
         switch (keyData)
         {
-            case Keys.Control | Keys.N: _ = SnipAsync(false); return true;
-            case Keys.Control | Keys.Shift | Keys.N: _ = SnipAsync(true); return true;
+            case Keys.Control | Keys.N: _ = SnipAsync(SnipMode.Region); return true;
+            case Keys.Control | Keys.Shift | Keys.N: _ = SnipAsync(SnipMode.FullScreen); return true;
+            case Keys.Control | Keys.Shift | Keys.R: _ = SnipAsync(SnipMode.Scrolling); return true;
             case Keys.Control | Keys.O: OpenFiles(); return true;
             case Keys.Control | Keys.S: SaveCombined(); return true;
             case Keys.Control | Keys.V when !editingText: PasteFromClipboard(); return true;

@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Self-checking tests for the scrolling-capture stitcher (runs anywhere: no GDI+/WinForms needed).
+       Run it with "dotnet run" from this folder; the exit code is the number of failures. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/MultiSnip/ScrollStitcher.cs" Link="ScrollStitcher.cs" />
+  </ItemGroup>
+</Project>

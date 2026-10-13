@@ -21,6 +21,9 @@ public sealed class SnipOverlayForm : Form
 
     public Bitmap? Result { get; private set; }
 
+    /// <summary>The selected rectangle in screen coordinates (valid when <see cref="Result"/> is set).</summary>
+    public Rectangle SelectedScreenArea { get; private set; }
+
     public SnipOverlayForm(Bitmap screen, Rectangle virtualScreen, string hint)
     {
         _screen = screen;
@@ -169,6 +172,7 @@ public sealed class SnipOverlayForm : Form
     private void Finish(Rectangle sel)
     {
         Result = _screen.Clone(sel, PixelFormat.Format32bppArgb);
+        SelectedScreenArea = new Rectangle(sel.X + _virtual.X, sel.Y + _virtual.Y, sel.Width, sel.Height);
         DialogResult = DialogResult.OK;
         Close();
     }

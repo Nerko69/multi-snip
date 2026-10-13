@@ -8,7 +8,7 @@ internal static class Hotkey
     /// <summary>Shortcuts Multi Snip uses inside its own window; a global hotkey would swallow them.</summary>
     private static readonly Keys[] InAppShortcuts =
     {
-        Keys.Control | Keys.N, Keys.Control | Keys.Shift | Keys.N, Keys.Control | Keys.O, Keys.Control | Keys.S,
+        Keys.Control | Keys.N, Keys.Control | Keys.Shift | Keys.N, Keys.Control | Keys.Shift | Keys.R, Keys.Control | Keys.O, Keys.Control | Keys.S,
         Keys.Control | Keys.V, Keys.Control | Keys.C, Keys.Control | Keys.Up, Keys.Control | Keys.Down,
     };
 

@@ -4,6 +4,15 @@ All notable changes to Multi Snip (by WebProgress.AI). The version is set in
 `src/MultiSnip/MultiSnip.csproj` (`<Version>`, `<FileVersion>`, `<AssemblyVersion>`);
 bump it there and add an entry here for every release.
 
+## [1.2.0] - 2026-10-13
+
+### Added
+- **Scrolling capture** (📜 Scrolling, Ctrl+Shift+R, or the tray menu): captures a whole web page, document or
+  chat, not just the visible part. Select the area that scrolls; Multi Snip scrolls it down with the mouse wheel,
+  captures each step and stitches everything into one tall image. Sticky headers/footers are kept only once.
+  It stops by itself at the end of the page (or at 20,000 px); press Esc to stop early.
+- "Scroll to the top first" option (in the Scrolling button's drop-down, on by default).
+
 ## [1.1.0] - 2026-10-11
 
 ### Added
