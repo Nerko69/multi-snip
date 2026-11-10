@@ -1,55 +1,67 @@
-using System.Drawing.Imaging;
-
 namespace MultiSnip;
-
-public sealed class SnipItem : IDisposable
-{
-    public SnipItem(Bitmap image, string source)
-    {
-        Image = image;
-        Source = source;
-    }
-
-    public Bitmap Image { get; }
-    public string Source { get; }
-
-    /// <summary>Cached list thumbnail (owned by this item).</summary>
-    public Bitmap? Thumbnail { get; set; }
-
-    public void Dispose()
-    {
-        Image.Dispose();
-        Thumbnail?.Dispose();
-    }
-}
 
 public enum SnipMode { Region, FullScreen, Scrolling }
 
-public sealed class MainForm : Form
+/// <summary>
+/// Main window. Split over several files:
+/// MainForm.cs (layout), MainForm.Tabs.cs (tabs, open/save, session), MainForm.Snips.cs (snip list, capture,
+/// clipboard, rendering) and MainForm.Input.cs (keyboard, global hotkey, window lifetime).
+/// </summary>
+public sealed partial class MainForm : Form
 {
     private const int HotkeyId = 0x5A01;
     private const string InternalDragFormat = "MultiSnip.ItemIndex";
 
+    /// <summary>The colors of the Paint palette.</summary>
+    private static readonly Color[] Palette =
+    {
+        Color.FromArgb(0, 0, 0), Color.FromArgb(127, 127, 127), Color.FromArgb(136, 0, 21), Color.FromArgb(237, 28, 36),
+        Color.FromArgb(255, 127, 39), Color.FromArgb(255, 242, 0), Color.FromArgb(34, 177, 76), Color.FromArgb(0, 162, 232),
+        Color.FromArgb(63, 72, 204), Color.FromArgb(163, 73, 164),
+        Color.FromArgb(255, 255, 255), Color.FromArgb(195, 195, 195), Color.FromArgb(185, 122, 87), Color.FromArgb(255, 174, 201),
+        Color.FromArgb(255, 201, 14), Color.FromArgb(239, 228, 176), Color.FromArgb(181, 230, 29), Color.FromArgb(153, 217, 234),
+        Color.FromArgb(112, 146, 190), Color.FromArgb(200, 191, 231),
+    };
+
+    private static readonly int[] ZoomPresets = { 25, 50, 75, 100, 125, 150, 200, 300, 400, 800 };
+
     private readonly Settings _settings = Settings.Load();
-    private readonly List<SnipItem> _snips = new();
-    private Bitmap? _combined;
-    private bool _combinedDirty = true;
+    private readonly List<Project> _projects = new();
+    private Project _project = null!; // the active tab
+    private Bitmap? _base;
+    private CombinedLayout? _layout;
     private bool _snipping;
     private bool _loadingUi;
+    private bool _syncingZoom;
     private bool _hotkeyRegistered;
     private string? _pendingNote; // extra info shown once with the next status update
-    private readonly ToolStripStatusLabel _hotkeyStatus = new() { IsLink = true, ToolTipText = "Click to change the global snip hotkey" };
 
     // UI
-    private readonly ToolStrip _toolbar = new();
+    private readonly MenuStrip _menu = new();
+    private readonly ToolStrip _captureBar = new();
+    private readonly ToolStrip _drawBar = new();
+    private readonly TabControl _tabs = new();
     private readonly ToolStripComboBox _delayCombo = new();
     private readonly ToolStripButton _keepSnippingButton = new("Keep snipping");
+    private readonly ToolStripMenuItem _keepSnippingMenu = new("Keep snipping");
+    private readonly ToolStripMenuItem _scrollTopMenu = new("Scrolling: scroll to the top first");
+    private readonly ToolStripMenuItem _recentFilesMenu = new("Open &Recent");
+    private readonly ToolStripMenuItem _recentFoldersMenu = new("Recent &Folders");
+    private readonly ToolStripMenuItem _timestampMenu = new("Add &timestamp to new file names");
+    private readonly ToolStripMenuItem _undoMenu = new("&Undo");
+    private readonly ToolStripMenuItem _redoMenu = new("&Redo");
+    private readonly ToolStripButton _undoButton = new("↶") { ToolTipText = "Undo (Ctrl+Z)" };
+    private readonly ToolStripButton _redoButton = new("↷") { ToolTipText = "Redo (Ctrl+Y)" };
     private readonly ListView _list = new();
     private readonly ImageList _thumbs = new();
+    private readonly EditorCanvas _canvas = new() { Dock = DockStyle.Fill };
+
+    // combine options
     private readonly RadioButton _vertical = new() { Text = "Vertical", AutoSize = true };
     private readonly RadioButton _horizontal = new() { Text = "Horizontal", AutoSize = true };
     private readonly RadioButton _grid = new() { Text = "Grid", AutoSize = true };
-    private readonly NumericUpDown _columns = new() { Minimum = 1, Maximum = 20, Width = 50 };
+    private readonly ComboBox _columns = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 95 };
+    private readonly Label _gridInfo = new() { AutoSize = true, ForeColor = SystemColors.GrayText };
     private readonly ComboBox _align = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 90 };
     private readonly NumericUpDown _spacing = new() { Minimum = 0, Maximum = 500, Width = 60 };
     private readonly NumericUpDown _margin = new() { Minimum = 0, Maximum = 500, Width = 60 };
@@ -59,14 +71,25 @@ public sealed class MainForm : Form
     private readonly CheckBox _border = new() { Text = "Border", AutoSize = true };
     private readonly Button _borderColor = new() { Width = 40, FlatStyle = FlatStyle.Flat };
     private readonly NumericUpDown _borderWidth = new() { Minimum = 1, Maximum = 50, Width = 50 };
-    private readonly CheckBox _fitPreview = new() { Text = "Fit preview", AutoSize = true };
-    private readonly Panel _previewPanel = new() { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Color.FromArgb(64, 64, 64) };
-    private readonly PictureBox _preview = new() { BackColor = Color.Transparent };
-    private readonly Label _emptyHint = new();
+    private readonly ComboBox _outputScale = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 70 };
+
+    // drawing tools
+    private readonly Dictionary<DrawTool, ToolStripButton> _toolButtons = new();
+    private readonly ToolStripComboBox _sizeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, AutoSize = false, Width = 62 };
+    private readonly ToolStripComboBox _fontCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, AutoSize = false, Width = 62 };
+    private readonly ToolStripButton _fillButton = new("Fill") { CheckOnClick = true, ToolTipText = "Filled shapes / text on a white box" };
+    private readonly ToolStripButton _boldButton = new("B") { CheckOnClick = true, ToolTipText = "Bold text" };
+    private readonly NumericUpDown _nextBadge = new() { Minimum = 0, Maximum = 9999, Width = 52 };
+    private readonly ToolStripButton _colorButton = new() { DisplayStyle = ToolStripItemDisplayStyle.Image, ToolTipText = "Current color — click for more colors" };
+
+    // status bar
     private readonly ToolStripStatusLabel _status = new() { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly ToolStripStatusLabel _hotkeyStatus = new() { IsLink = true, ToolTipText = "Click to change the global snip hotkey" };
+    private readonly TrackBar _zoomSlider = new() { Minimum = 0, Maximum = 100, TickStyle = TickStyle.None, AutoSize = false, Width = 140, Height = 22 };
+    private readonly ToolStripComboBox _zoomCombo = new() { AutoSize = false, Width = 72, ToolTipText = "Zoom (Ctrl + mouse wheel)" };
+
     private readonly NotifyIcon _tray = new();
     private readonly System.Windows.Forms.Timer _renderTimer = new() { Interval = 120 };
-    private Point _previewDragStart;
 
     public MainForm()
     {
@@ -75,97 +98,126 @@ public sealed class MainForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         Text = $"Multi Snip v{AppInfo.Version}";
         Icon = AppInfo.LoadIcon();
-        MinimumSize = new Size(760, 480);
-        Size = new Size(1150, 760);
+        MinimumSize = new Size(900, 560);
+        Size = new Size(1280, 820);
         StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
         AllowDrop = true;
 
-        BuildToolbar();
-        var split = new SplitContainer
-        {
-            Dock = DockStyle.Fill,
-            FixedPanel = FixedPanel.Panel1,
-            SplitterWidth = 6,
-        };
-        split.Panel1.Controls.Add(BuildSnipList());
-        split.Panel2.Controls.Add(BuildPreviewArea());
+        BuildMenu();
+        BuildCaptureBar();
+        BuildDrawBar();
+        BuildTabs();
 
-        var statusStrip = new StatusStrip();
-        statusStrip.Items.Add(_status);
-        _hotkeyStatus.Click += (_, _) => ChangeHotkey();
-        statusStrip.Items.Add(_hotkeyStatus);
+        var split = new SplitContainer { Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel1, SplitterWidth = 6 };
+        split.Panel1.Controls.Add(BuildSnipList());
+        split.Panel2.Controls.Add(BuildWorkArea());
 
         Controls.Add(split);
-        Controls.Add(_toolbar);
-        Controls.Add(statusStrip);
+        Controls.Add(_tabs);
+        Controls.Add(_drawBar);
+        Controls.Add(_captureBar);
+        Controls.Add(BuildStatusBar());
+        Controls.Add(_menu);
+        MainMenuStrip = _menu;
         BuildTray();
         ResumeLayout(true);
-        split.SplitterDistance = LogicalToDeviceUnits(250);
+        split.SplitterDistance = LogicalToDeviceUnits(240);
 
-        LoadSettingsIntoUi();
+        LoadToolSettings();
         _renderTimer.Tick += (_, _) => { _renderTimer.Stop(); RenderPreview(); };
         DragEnter += OnExternalDragEnter;
         DragDrop += OnExternalDragDrop;
-        RefreshAll();
+
+        RestoreSession();
+        if (_projects.Count == 0) NewTab();
     }
 
-    // ------------------------------------------------------------------ UI construction
+    // ------------------------------------------------------------------ menus and toolbars
 
-    private void BuildToolbar()
+    private static ToolStripMenuItem Item(string text, string? shortcut, Action onClick)
     {
-        _toolbar.GripStyle = ToolStripGripStyle.Hidden;
-        _toolbar.Padding = new Padding(4, 2, 4, 2);
-        _toolbar.ImageScalingSize = new Size(20, 20);
-
-        _toolbar.Items.Add(Button("✂  New Snip", "Drag a rectangle to snip (Ctrl+N)", async () => await SnipAsync(SnipMode.Region)));
-        _toolbar.Items.Add(Button("🖥  Full Screen", "Snip the whole screen the mouse is on (Ctrl+Shift+N)", async () => await SnipAsync(SnipMode.FullScreen)));
-        _toolbar.Items.Add(BuildScrollingButton());
-        _toolbar.Items.Add(new ToolStripLabel("Delay:"));
-        _delayCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _delayCombo.Items.AddRange(new object[] { "None", "3 sec", "5 sec", "10 sec" });
-        _delayCombo.AutoSize = false;
-        _delayCombo.Width = 70;
-        _delayCombo.SelectedIndexChanged += (_, _) =>
-        {
-            _settings.DelaySeconds = _delayCombo.SelectedIndex switch { 1 => 3, 2 => 5, 3 => 10, _ => 0 };
-        };
-        _toolbar.Items.Add(_delayCombo);
-        _keepSnippingButton.CheckOnClick = true;
-        _keepSnippingButton.ToolTipText = "After each snip, immediately start the next one. Press Esc to stop.";
-        _keepSnippingButton.CheckedChanged += (_, _) => _settings.KeepSnipping = _keepSnippingButton.Checked;
-        _toolbar.Items.Add(_keepSnippingButton);
-        _toolbar.Items.Add(new ToolStripSeparator());
-        _toolbar.Items.Add(Button("📋  Paste", "Add the image on the clipboard (Ctrl+V)", PasteFromClipboard));
-        _toolbar.Items.Add(Button("📂  Open…", "Add image files (Ctrl+O)", OpenFiles));
-        _toolbar.Items.Add(new ToolStripSeparator());
-        _toolbar.Items.Add(Button("⧉  Copy Combined", "Copy the combined image to the clipboard (Ctrl+C)", CopyCombined));
-        _toolbar.Items.Add(Button("💾  Save As…", "Save the combined image (Ctrl+S)", SaveCombined));
-        _toolbar.Items.Add(new ToolStripSeparator());
-        _toolbar.Items.Add(Button("🗑  Clear All", "Remove all snips", ClearAll));
-
-        var about = Button("About", "About Multi Snip", () => { using var f = new AboutForm(HotkeyText); f.ShowDialog(this); });
-        about.Alignment = ToolStripItemAlignment.Right;
-        _toolbar.Items.Add(about);
-        var hotkey = Button("⌨  Hotkey…", "Change the global snip hotkey", ChangeHotkey);
-        hotkey.Alignment = ToolStripItemAlignment.Right;
-        _toolbar.Items.Add(hotkey);
+        // Shortcuts are handled in ProcessCmdKey (so Ctrl+C etc. still work inside text boxes); only displayed here.
+        var item = new ToolStripMenuItem(text) { ShortcutKeyDisplayString = shortcut };
+        item.Click += (_, _) => onClick();
+        return item;
     }
 
-    private ToolStripSplitButton BuildScrollingButton()
+    private void BuildMenu()
     {
-        var b = new ToolStripSplitButton("📜  Scrolling")
+        var file = new ToolStripMenuItem("&File");
+        file.DropDownItems.AddRange(new ToolStripItem[]
         {
-            DisplayStyle = ToolStripItemDisplayStyle.Text,
-            ToolTipText = "Capture a whole page, not just the visible part (Ctrl+Shift+R).\n" +
-                          "Select the area that scrolls; Multi Snip scrolls it down and stitches everything into one image.\n" +
-                          "Press Esc to stop early.",
-        };
-        b.ButtonClick += async (_, _) => await SnipAsync(SnipMode.Scrolling);
-        var fromTop = new ToolStripMenuItem("Scroll to the top first") { CheckOnClick = true, Checked = _settings.ScrollToTopFirst };
-        fromTop.CheckedChanged += (_, _) => _settings.ScrollToTopFirst = fromTop.Checked;
-        b.DropDownItems.Add(fromTop);
-        return b;
+            Item("&New Tab", "Ctrl+T", () => NewTab()),
+            Item("&Open…", "Ctrl+O", OpenFiles),
+            _recentFilesMenu,
+            new ToolStripSeparator(),
+            Item("&Save", "Ctrl+S", () => Save()),
+            Item("Save &As…", "F12", () => SaveAs()),
+            Item("&Export Image As… (PNG, JPG, BMP, GIF)", "Ctrl+E", ExportImage),
+            _recentFoldersMenu,
+            _timestampMenu,
+            new ToolStripSeparator(),
+            Item("&Close Tab", "Ctrl+W", () => CloseTab(_project)),
+            Item("E&xit", "Alt+F4", Close),
+        });
+        _timestampMenu.CheckOnClick = true;
+        _timestampMenu.CheckedChanged += (_, _) => _settings.AddTimestamp = _timestampMenu.Checked;
+        file.DropDownOpening += (_, _) => { RebuildRecentMenus(); _timestampMenu.Checked = _settings.AddTimestamp; };
+
+        var edit = new ToolStripMenuItem("&Edit");
+        _undoMenu.ShortcutKeyDisplayString = "Ctrl+Z";
+        _undoMenu.Click += (_, _) => Undo();
+        _redoMenu.ShortcutKeyDisplayString = "Ctrl+Y";
+        _redoMenu.Click += (_, _) => Redo();
+        edit.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            _undoMenu, _redoMenu,
+            new ToolStripSeparator(),
+            Item("&Copy Combined Image", "Ctrl+C", CopyCombined),
+            Item("&Paste Image as Next Snip", "Ctrl+V", PasteFromClipboard),
+            new ToolStripSeparator(),
+            Item("&Delete Selected Drawing / Snip", "Del", DeleteSelected),
+            Item("Clear Drawings on Selected Snips", null, ClearDrawingsOnSelected),
+            Item("Re&number Badges 1, 2, 3…", null, RenumberBadges),
+            new ToolStripSeparator(),
+            Item("Remove &All Snips", null, ClearAll),
+        });
+        edit.DropDownOpening += (_, _) => UpdateUndoState();
+
+        var capture = new ToolStripMenuItem("&Capture");
+        _keepSnippingMenu.CheckOnClick = true;
+        _keepSnippingMenu.CheckedChanged += (_, _) => _keepSnippingButton.Checked = _keepSnippingMenu.Checked;
+        _scrollTopMenu.CheckOnClick = true;
+        _scrollTopMenu.CheckedChanged += (_, _) => _settings.ScrollToTopFirst = _scrollTopMenu.Checked;
+        capture.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            Item("&New Snip", "Ctrl+N", () => _ = SnipAsync(SnipMode.Region)),
+            Item("&Full Screen Snip", "Ctrl+Shift+N", () => _ = SnipAsync(SnipMode.FullScreen)),
+            Item("&Scrolling Capture (whole page)", "Ctrl+Shift+R", () => _ = SnipAsync(SnipMode.Scrolling)),
+            new ToolStripSeparator(),
+            _keepSnippingMenu,
+            _scrollTopMenu,
+            new ToolStripSeparator(),
+            Item("Global &Hotkey…", null, ChangeHotkey),
+        });
+
+        var view = new ToolStripMenuItem("&View");
+        view.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            Item("Zoom &In", "Ctrl++", () => _canvas.ZoomBy(1.25f)),
+            Item("Zoom &Out", "Ctrl+-", () => _canvas.ZoomBy(0.8f)),
+            Item("&100%", "Ctrl+1", () => _canvas.SetZoom(1f)),
+            Item("&Fit to Window", "Ctrl+0", () => _canvas.SetZoom(null)),
+            new ToolStripSeparator(),
+            Item("Next Tab", "Ctrl+Tab", () => SwitchTab(+1)),
+            Item("Previous Tab", "Ctrl+Shift+Tab", () => SwitchTab(-1)),
+        });
+
+        var help = new ToolStripMenuItem("&Help");
+        help.DropDownItems.Add(Item("&About Multi Snip", null, () => { using var f = new AboutForm(HotkeyText); f.ShowDialog(this); }));
+
+        _menu.Items.AddRange(new ToolStripItem[] { file, edit, capture, view, help });
     }
 
     private static ToolStripButton Button(string text, string tip, Action onClick)
@@ -173,6 +225,175 @@ public sealed class MainForm : Form
         var b = new ToolStripButton(text) { DisplayStyle = ToolStripItemDisplayStyle.Text, ToolTipText = tip };
         b.Click += (_, _) => onClick();
         return b;
+    }
+
+    private void BuildCaptureBar()
+    {
+        _captureBar.GripStyle = ToolStripGripStyle.Hidden;
+        _captureBar.Padding = new Padding(4, 2, 4, 2);
+
+        _captureBar.Items.Add(Button("✂  New Snip", "Drag a rectangle to snip (Ctrl+N)", () => _ = SnipAsync(SnipMode.Region)));
+        _captureBar.Items.Add(Button("🖥  Full Screen", "Snip the whole screen the mouse is on (Ctrl+Shift+N)", () => _ = SnipAsync(SnipMode.FullScreen)));
+        _captureBar.Items.Add(Button("📜  Scrolling", "Capture a whole page, not just the visible part (Ctrl+Shift+R).\n" +
+                                                      "Select the area that scrolls; Multi Snip scrolls it and stitches everything.\nPress Esc to stop early.",
+            () => _ = SnipAsync(SnipMode.Scrolling)));
+        _captureBar.Items.Add(new ToolStripLabel("Delay:"));
+        _delayCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _delayCombo.Items.AddRange(new object[] { "None", "3 sec", "5 sec", "10 sec" });
+        _delayCombo.AutoSize = false;
+        _delayCombo.Width = 70;
+        _delayCombo.SelectedIndexChanged += (_, _) =>
+            _settings.DelaySeconds = _delayCombo.SelectedIndex switch { 1 => 3, 2 => 5, 3 => 10, _ => 0 };
+        _captureBar.Items.Add(_delayCombo);
+        _keepSnippingButton.CheckOnClick = true;
+        _keepSnippingButton.ToolTipText = "After each snip, immediately start the next one. Press Esc to stop.";
+        _keepSnippingButton.CheckedChanged += (_, _) =>
+        {
+            _settings.KeepSnipping = _keepSnippingButton.Checked;
+            _keepSnippingMenu.Checked = _keepSnippingButton.Checked;
+        };
+        _captureBar.Items.Add(_keepSnippingButton);
+        _captureBar.Items.Add(new ToolStripSeparator());
+        _captureBar.Items.Add(Button("➕ Tab", "New tab for another project (Ctrl+T)", () => NewTab()));
+        _captureBar.Items.Add(Button("📂  Open…", "Open a saved Multi Snip image (as a tab with all its snips) or add images (Ctrl+O)", OpenFiles));
+        _captureBar.Items.Add(Button("💾  Save", "Save this tab (Ctrl+S). The PNG keeps the original snips and drawings editable.", () => Save()));
+        _captureBar.Items.Add(new ToolStripSeparator());
+        _captureBar.Items.Add(Button("📋  Paste", "Add the image on the clipboard as the next snip (Ctrl+V)", PasteFromClipboard));
+        _captureBar.Items.Add(Button("⧉  Copy Combined", "Copy the finished image to the clipboard (Ctrl+C)", CopyCombined));
+        var drag = new ToolStripButton("⇱  Drag Out") { ToolTipText = "Drag this button into another app (chat, email, document) to drop the finished image there" };
+        drag.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) StartDragOut(); };
+        _captureBar.Items.Add(drag);
+
+        var hotkey = Button("⌨  Hotkey…", "Change the global snip hotkey", ChangeHotkey);
+        hotkey.Alignment = ToolStripItemAlignment.Right;
+        _captureBar.Items.Add(hotkey);
+    }
+
+    private void BuildDrawBar()
+    {
+        _drawBar.GripStyle = ToolStripGripStyle.Hidden;
+        _drawBar.Padding = new Padding(4, 1, 4, 1);
+        int sw = LogicalToDeviceUnits(16);
+        _drawBar.ImageScalingSize = new Size(sw, sw);
+
+        _undoButton.Click += (_, _) => Undo();
+        _redoButton.Click += (_, _) => Redo();
+        _drawBar.Items.Add(_undoButton);
+        _drawBar.Items.Add(_redoButton);
+        _drawBar.Items.Add(new ToolStripSeparator());
+
+        void AddTool(DrawTool tool, string text, string tip)
+        {
+            var b = new ToolStripButton(text) { ToolTipText = tip };
+            b.Click += (_, _) => SetTool(tool);
+            _toolButtons[tool] = b;
+            _drawBar.Items.Add(b);
+        }
+        AddTool(DrawTool.Select, "↖ Select", "Select, move (drag or arrow keys) and delete drawings. Double-click text to edit. (V)");
+        AddTool(DrawTool.Pen, "✏ Pen", "Draw freehand (P)");
+        AddTool(DrawTool.Marker, "🖍 Marker", "Highlighter: translucent, thick strokes (M)");
+        AddTool(DrawTool.Eraser, "⌫ Eraser", "Click or drag over drawings to remove them (E)");
+        _drawBar.Items.Add(new ToolStripSeparator());
+        AddTool(DrawTool.Line, "╱", "Line — hold Shift for 45° steps (L)");
+        AddTool(DrawTool.Arrow, "➜", "Arrow — hold Shift for 45° steps (A)");
+        AddTool(DrawTool.Rectangle, "▭", "Rectangle — hold Shift for a square (R)");
+        AddTool(DrawTool.Ellipse, "◯", "Ellipse — hold Shift for a circle (O)");
+        _fillButton.CheckedChanged += (_, _) =>
+        {
+            if (_loadingUi) return;
+            _canvas.Filled = _settings.ToolFilled = _fillButton.Checked;
+            _canvas.ApplyStyleToSelection(fill: true);
+        };
+        _drawBar.Items.Add(_fillButton);
+        _drawBar.Items.Add(new ToolStripSeparator());
+        AddTool(DrawTool.Text, "𝐓 Text", "Click to type a label; Enter to finish, Shift+Enter for a new line (T)");
+        _boldButton.Font = new Font(_drawBar.Font, FontStyle.Bold);
+        _boldButton.CheckedChanged += (_, _) =>
+        {
+            if (_loadingUi) return;
+            _canvas.BoldText = _settings.ToolBold = _boldButton.Checked;
+            _canvas.ApplyStyleToSelection(bold: true);
+        };
+        _drawBar.Items.Add(_boldButton);
+        AddTool(DrawTool.BadgeCircle, "❶", "Numbered round label: click to place the next number (C). Double-click one to change it.");
+        AddTool(DrawTool.BadgeSquare, "▣1", "Numbered square label: click to place the next number (Q). Double-click one to change it.");
+        _drawBar.Items.Add(new ToolStripLabel("Next #"));
+        _nextBadge.ValueChanged += (_, _) => { if (!_loadingUi) _project.NextBadgeNumber = (int)_nextBadge.Value; };
+        _drawBar.Items.Add(new ToolStripControlHost(_nextBadge) { ToolTipText = "Number the next label gets" });
+        _drawBar.Items.Add(Button("1-2-3", "Renumber all labels 1, 2, 3… in order (snip order, then placement order)", RenumberBadges));
+        _drawBar.Items.Add(new ToolStripSeparator());
+
+        _drawBar.Items.Add(new ToolStripLabel("Size"));
+        foreach (int s in new[] { 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48 }) _sizeCombo.Items.Add($"{s} px");
+        _sizeCombo.ToolTipText = "Line / pen width";
+        _sizeCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (_loadingUi || _sizeCombo.SelectedItem is not string t) return;
+            _canvas.LineWidth = _settings.ToolWidth = float.Parse(t.Split(' ')[0]);
+            _canvas.ApplyStyleToSelection(width: true);
+        };
+        _drawBar.Items.Add(_sizeCombo);
+        _drawBar.Items.Add(new ToolStripLabel("Text"));
+        foreach (int s in new[] { 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 64, 80, 96 }) _fontCombo.Items.Add($"{s} px");
+        _fontCombo.ToolTipText = "Text and label size";
+        _fontCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (_loadingUi || _fontCombo.SelectedItem is not string t) return;
+            _canvas.FontSizePx = _settings.ToolFontSize = float.Parse(t.Split(' ')[0]);
+            _canvas.ApplyStyleToSelection(font: true);
+        };
+        _drawBar.Items.Add(_fontCombo);
+        _drawBar.Items.Add(new ToolStripSeparator());
+
+        _colorButton.Click += (_, _) => PickToolColor();
+        _drawBar.Items.Add(_colorButton);
+        foreach (Color c in Palette)
+        {
+            var b = new ToolStripButton { DisplayStyle = ToolStripItemDisplayStyle.Image, Image = Swatch(c, sw, false), ToolTipText = ColorName(c), Margin = new Padding(0) };
+            b.Click += (_, _) => SetToolColor(c);
+            _drawBar.Items.Add(b);
+        }
+    }
+
+    private static Bitmap Swatch(Color c, int size, bool current)
+    {
+        var bmp = new Bitmap(size, size);
+        using Graphics g = Graphics.FromImage(bmp);
+        using var b = new SolidBrush(c);
+        g.FillRectangle(b, 1, 1, size - 2, size - 2);
+        g.DrawRectangle(current ? Pens.Black : Pens.Gray, 0, 0, size - 1, size - 1);
+        if (current) g.DrawRectangle(Pens.White, 1, 1, size - 3, size - 3);
+        return bmp;
+    }
+
+    private static string ColorName(Color c) => $"RGB {c.R}, {c.G}, {c.B}";
+
+    private void BuildTabs()
+    {
+        _tabs.Dock = DockStyle.Top;
+        _tabs.Padding = new Point(14, 4);
+        _tabs.ShowToolTips = true;
+        _tabs.SelectedIndexChanged += (_, _) =>
+        {
+            if (_tabs.SelectedIndex >= 0 && _tabs.SelectedIndex < _projects.Count && !ReferenceEquals(_projects[_tabs.SelectedIndex], _project))
+                ActivateProject(_projects[_tabs.SelectedIndex]);
+        };
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("New Tab", null, (_, _) => NewTab());
+        menu.Items.Add("Close Tab", null, (_, _) => CloseTab(_project));
+        menu.Items.Add("Close Other Tabs", null, (_, _) => { foreach (Project p in _projects.Where(p => p != _project).ToList()) if (!CloseTab(p)) break; });
+        _tabs.ContextMenuStrip = menu;
+        _tabs.MouseUp += (_, e) =>
+        {
+            // Middle-click closes a tab; right-click selects the tab before showing the menu.
+            for (int i = 0; i < _tabs.TabCount; i++)
+            {
+                if (!_tabs.GetTabRect(i).Contains(e.Location)) continue;
+                if (e.Button == MouseButtons.Middle) CloseTab(_projects[i]);
+                else if (e.Button == MouseButtons.Right) _tabs.SelectedIndex = i;
+                break;
+            }
+        };
     }
 
     private Control BuildSnipList()
@@ -207,17 +428,13 @@ public sealed class MainForm : Form
         _list.DragOver += OnListDragOver;
         _list.DragLeave += (_, _) => _list.InsertionMark.Index = -1;
         _list.DragDrop += OnListDragDrop;
-        _list.KeyDown += (_, e) =>
-        {
-            if (e.KeyCode == Keys.Delete) { RemoveSelected(); e.Handled = true; }
-        };
         _list.ContextMenuStrip = BuildListMenu();
         panel.Controls.Add(_list, 0, 1);
 
         var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true, Margin = new Padding(0, 4, 0, 0) };
         buttons.Controls.Add(SmallButton("▲ Up", "Move selected up (Ctrl+Up)", () => MoveSelected(-1)));
         buttons.Controls.Add(SmallButton("▼ Down", "Move selected down (Ctrl+Down)", () => MoveSelected(1)));
-        buttons.Controls.Add(SmallButton("✕ Remove", "Remove selected (Delete)", RemoveSelected));
+        buttons.Controls.Add(SmallButton("✕ Remove", "Remove selected snips (Delete)", RemoveSelected));
         panel.Controls.Add(buttons, 0, 2);
         return panel;
     }
@@ -225,20 +442,33 @@ public sealed class MainForm : Form
     private ContextMenuStrip BuildListMenu()
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Copy this snip", null, (_, _) => { if (Selected().FirstOrDefault() is { } s) SetClipboardImage(s.Image); });
-        menu.Items.Add("Save this snip as…", null, (_, _) => { if (Selected().FirstOrDefault() is { } s) SaveImage(s.Image, "Snip"); });
+        var moveTab = new ToolStripMenuItem("Move to another tab");
+        menu.Items.Add("Copy this snip (with drawings)", null, (_, _) => { if (Selected().FirstOrDefault() is { } s) { using Bitmap b = RenderSnip(s); SetClipboardImage(b); } });
+        menu.Items.Add("Save this snip as…", null, (_, _) => { if (Selected().FirstOrDefault() is { } s) { using Bitmap b = RenderSnip(s); SaveImageFile(b, "Snip", out _); } });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Move up", null, (_, _) => MoveSelected(-1));
         menu.Items.Add("Move down", null, (_, _) => MoveSelected(1));
         menu.Items.Add("Move to top", null, (_, _) => MoveSelectedTo(0));
-        menu.Items.Add("Move to bottom", null, (_, _) => MoveSelectedTo(_snips.Count));
+        menu.Items.Add("Move to bottom", null, (_, _) => MoveSelectedTo(_project.Snips.Count));
+        menu.Items.Add(moveTab);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Clear drawings", null, (_, _) => ClearDrawingsOnSelected());
         menu.Items.Add("Remove", null, (_, _) => RemoveSelected());
-        menu.Opening += (_, e) => e.Cancel = _list.SelectedIndices.Count == 0;
+        menu.Opening += (_, e) =>
+        {
+            e.Cancel = _list.SelectedIndices.Count == 0;
+            moveTab.DropDownItems.Clear();
+            foreach (Project p in _projects.Where(p => p != _project))
+            {
+                Project target = p;
+                moveTab.DropDownItems.Add(p.DisplayName, null, (_, _) => MoveSelectedToTab(target));
+            }
+            moveTab.DropDownItems.Add("New tab", null, (_, _) => MoveSelectedToTab(null));
+        };
         return menu;
     }
 
-    private Button SmallButton(string text, string tip, Action onClick)
+    private static Button SmallButton(string text, string tip, Action onClick)
     {
         var b = new Button { Text = text, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(4, 0, 4, 0) };
         new ToolTip().SetToolTip(b, tip);
@@ -246,7 +476,7 @@ public sealed class MainForm : Form
         return b;
     }
 
-    private Control BuildPreviewArea()
+    private Control BuildWorkArea()
     {
         var options = new FlowLayoutPanel
         {
@@ -254,72 +484,113 @@ public sealed class MainForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             WrapContents = true,
-            Padding = new Padding(6, 6, 6, 2),
+            Padding = new Padding(6, 4, 6, 2),
         };
 
-        // Layout radio buttons share a container so they form one group.
-        var layoutGroup = Row(new Label { Text = "Combine:", AutoSize = true, Anchor = AnchorStyles.Left, Font = new Font(Font, FontStyle.Bold) },
-            _vertical, _horizontal, _grid, new Label { Text = "columns", AutoSize = true, Anchor = AnchorStyles.Left }, _columns);
-        options.Controls.Add(layoutGroup);
-        options.SetFlowBreak(layoutGroup, true);
+        _columns.Items.Add("Auto");
+        foreach (int c in GridColumnChoices) _columns.Items.Add($"{c} columns");
+        options.Controls.Add(Row(new Label { Text = "Combine:", AutoSize = true, Font = new Font(Font, FontStyle.Bold) },
+            _vertical, _horizontal, _grid, _columns, _gridInfo));
         options.Controls.Add(Row(Lbl("Align"), _align));
         options.Controls.Add(Row(Lbl("Spacing"), _spacing));
         options.Controls.Add(Row(Lbl("Margin"), _margin));
         options.Controls.Add(Row(_matchSize));
         options.Controls.Add(Row(Lbl("Background"), _bgColor, _transparent));
         options.Controls.Add(Row(_border, _borderColor, _borderWidth));
-        options.Controls.Add(Row(_fitPreview));
+        foreach (int s in OutputScales) _outputScale.Items.Add($"{s}%");
+        options.Controls.Add(Row(Lbl("Output size"), _outputScale));
 
         var tips = new ToolTip();
+        tips.SetToolTip(_columns, "Grid columns. Auto picks a square-ish grid (e.g. 9 snips → 3 × 3, 16 → 4 × 4).");
         tips.SetToolTip(_matchSize, "Vertical: scale snips to the same width. Horizontal: same height. Grid: same cell size.");
         tips.SetToolTip(_spacing, "Gap between snips, in pixels");
         tips.SetToolTip(_margin, "Outer padding around the combined image, in pixels");
         tips.SetToolTip(_transparent, "Transparent background (kept when saving PNG)");
         tips.SetToolTip(_borderWidth, "Border width, in pixels");
+        tips.SetToolTip(_outputScale, "Scale the saved / copied image down — handy when many snips make it very large");
 
         foreach (var rb in new[] { _vertical, _horizontal, _grid }) rb.CheckedChanged += OnOptionChanged;
-        foreach (var nud in new[] { _columns, _spacing, _margin, _borderWidth }) nud.ValueChanged += OnOptionChanged;
+        foreach (var nud in new[] { _spacing, _margin, _borderWidth }) nud.ValueChanged += OnOptionChanged;
         foreach (var cb in new[] { _matchSize, _transparent, _border }) cb.CheckedChanged += OnOptionChanged;
-        _align.SelectedIndexChanged += OnOptionChanged;
-        _fitPreview.CheckedChanged += (_, _) => { _settings.FitPreview = _fitPreview.Checked; ApplyPreviewMode(); };
-        _bgColor.Click += (_, _) => PickColor(_bgColor, c => _settings.BackgroundArgb = c.ToArgb());
-        _borderColor.Click += (_, _) => PickColor(_borderColor, c => _settings.BorderArgb = c.ToArgb());
+        foreach (var combo in new[] { _align, _columns, _outputScale }) combo.SelectedIndexChanged += OnOptionChanged;
+        _bgColor.Click += (_, _) => PickOptionColor(_bgColor, (o, c) => o.Background = c);
+        _borderColor.Click += (_, _) => PickOptionColor(_borderColor, (o, c) => o.BorderColor = c);
 
-        _preview.MouseDown += (_, e) => _previewDragStart = e.Location;
-        _preview.MouseMove += OnPreviewMouseMove;
-        _preview.DoubleClick += (_, _) => { _fitPreview.Checked = !_fitPreview.Checked; };
-        new ToolTip().SetToolTip(_preview, "Drag this image into another app (chat, email, document) — or double-click to toggle zoom.");
-        _previewPanel.Controls.Add(_preview);
-
-        _emptyHint.Dock = DockStyle.Fill;
-        _emptyHint.TextAlign = ContentAlignment.MiddleCenter;
-        _emptyHint.ForeColor = Color.Gainsboro;
-        _emptyHint.Font = new Font(Font.FontFamily, 12f);
-        _previewPanel.Controls.Add(_emptyHint);
+        _canvas.AllowDrop = true;
+        _canvas.DragEnter += OnExternalDragEnter;
+        _canvas.DragDrop += OnExternalDragDrop;
+        _canvas.DocumentChanged += (_, _) => OnDrawingsChanged();
+        _canvas.ZoomChanged += (_, _) => SyncZoomUi();
+        _canvas.SnipClicked += (_, i) => SelectSnip(i);
 
         var container = new Panel { Dock = DockStyle.Fill };
-        container.Controls.Add(_previewPanel);
+        container.Controls.Add(_canvas);
         container.Controls.Add(options);
         return container;
     }
 
-    private static Label Lbl(string text) => new() { Text = text, AutoSize = true, Anchor = AnchorStyles.Left };
+    private static readonly int[] GridColumnChoices = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20 };
+    private static readonly int[] OutputScales = { 100, 75, 50, 33, 25 };
+
+    private static Label Lbl(string text) => new() { Text = text, AutoSize = true };
 
     private static FlowLayoutPanel Row(params Control[] controls)
     {
-        var row = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            WrapContents = false,
-            Margin = new Padding(0, 0, 14, 2),
-        };
+        var row = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, Margin = new Padding(0, 0, 14, 2) };
         foreach (Control c in controls)
         {
             if (c is Label or CheckBox or RadioButton) c.Margin = new Padding(3, 6, 3, 3);
             row.Controls.Add(c);
         }
         return row;
+    }
+
+    private StatusStrip BuildStatusBar()
+    {
+        var bar = new StatusStrip();
+        bar.Items.Add(_status);
+        _hotkeyStatus.Click += (_, _) => ChangeHotkey();
+        bar.Items.Add(_hotkeyStatus);
+        bar.Items.Add(new ToolStripSeparator());
+
+        var minus = new ToolStripButton("−") { ToolTipText = "Zoom out (Ctrl+-)" };
+        minus.Click += (_, _) => _canvas.ZoomBy(0.8f);
+        var plus = new ToolStripButton("+") { ToolTipText = "Zoom in (Ctrl++)" };
+        plus.Click += (_, _) => _canvas.ZoomBy(1.25f);
+        _zoomSlider.Height = LogicalToDeviceUnits(22);
+        _zoomSlider.ValueChanged += (_, _) => { if (!_syncingZoom) _canvas.SetZoom(SliderToZoom(_zoomSlider.Value)); };
+        _zoomCombo.Items.Add("Fit");
+        foreach (int z in ZoomPresets) _zoomCombo.Items.Add($"{z}%");
+        _zoomCombo.SelectedIndexChanged += (_, _) => { if (!_syncingZoom) ApplyZoomText(_zoomCombo.Text); };
+        _zoomCombo.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { ApplyZoomText(_zoomCombo.Text); e.SuppressKeyPress = true; _canvas.Focus(); } };
+
+        bar.Items.Add(minus);
+        bar.Items.Add(new ToolStripControlHost(_zoomSlider) { AutoSize = false, Width = _zoomSlider.Width, ToolTipText = "Zoom" });
+        bar.Items.Add(plus);
+        bar.Items.Add(_zoomCombo);
+        return bar;
+    }
+
+    // Slider is logarithmic (like Paint), so 100% sits near the middle.
+    private static readonly double LogMin = Math.Log(EditorCanvas.MinZoom), LogMax = Math.Log(EditorCanvas.MaxZoom);
+    private static float SliderToZoom(int v) => (float)Math.Exp(LogMin + (LogMax - LogMin) * v / 100.0);
+    private static int ZoomToSlider(float z) => (int)Math.Round(Math.Clamp((Math.Log(z) - LogMin) / (LogMax - LogMin), 0, 1) * 100);
+
+    private void ApplyZoomText(string text)
+    {
+        string t = text.Trim();
+        if (t.StartsWith("Fit", StringComparison.OrdinalIgnoreCase)) { _canvas.SetZoom(null); return; }
+        if (float.TryParse(t.TrimEnd('%'), out float pct) && pct > 0) _canvas.SetZoom(pct / 100f);
+        else SyncZoomUi();
+    }
+
+    private void SyncZoomUi()
+    {
+        _syncingZoom = true;
+        float z = _canvas.Zoom;
+        _zoomSlider.Value = ZoomToSlider(z);
+        _zoomCombo.Text = _canvas.IsFit ? $"Fit ({z * 100:0}%)" : $"{z * 100:0}%";
+        _syncingZoom = false;
     }
 
     private void BuildTray()
@@ -339,718 +610,49 @@ public sealed class MainForm : Form
         _tray.BalloonTipClicked += (_, _) => ShowAndActivate();
     }
 
-    // ------------------------------------------------------------------ settings <-> UI
+    // ------------------------------------------------------------------ drawing tool state
 
-    private void LoadSettingsIntoUi()
+    private void LoadToolSettings()
     {
         _loadingUi = true;
-        _vertical.Checked = _settings.Layout == CombineLayout.Vertical;
-        _horizontal.Checked = _settings.Layout == CombineLayout.Horizontal;
-        _grid.Checked = _settings.Layout == CombineLayout.Grid;
-        _columns.Value = Math.Clamp(_settings.GridColumns, 1, 20);
-        UpdateAlignLabels();
-        _align.SelectedIndex = (int)_settings.Alignment;
-        _spacing.Value = Math.Clamp(_settings.Spacing, 0, 500);
-        _margin.Value = Math.Clamp(_settings.Margin, 0, 500);
-        _matchSize.Checked = _settings.MatchSize;
-        _transparent.Checked = _settings.TransparentBackground;
-        _border.Checked = _settings.Border;
-        _borderWidth.Value = Math.Clamp(_settings.BorderWidth, 1, 50);
-        _bgColor.BackColor = Color.FromArgb(255, Color.FromArgb(_settings.BackgroundArgb));
-        _borderColor.BackColor = Color.FromArgb(255, Color.FromArgb(_settings.BorderArgb));
-        _fitPreview.Checked = _settings.FitPreview;
         _delayCombo.SelectedIndex = _settings.DelaySeconds switch { 3 => 1, 5 => 2, 10 => 3, _ => 0 };
-        _keepSnippingButton.Checked = _settings.KeepSnipping;
+        _keepSnippingButton.Checked = _keepSnippingMenu.Checked = _settings.KeepSnipping;
+        _scrollTopMenu.Checked = _settings.ScrollToTopFirst;
+        _fillButton.Checked = _canvas.Filled = _settings.ToolFilled;
+        _boldButton.Checked = _canvas.BoldText = _settings.ToolBold;
+        _canvas.LineWidth = _settings.ToolWidth;
+        _canvas.FontSizePx = _settings.ToolFontSize;
+        _sizeCombo.SelectedItem = $"{_settings.ToolWidth:0} px";
+        if (_sizeCombo.SelectedIndex < 0) _sizeCombo.SelectedIndex = 2;
+        _fontCombo.SelectedItem = $"{_settings.ToolFontSize:0} px";
+        if (_fontCombo.SelectedIndex < 0) _fontCombo.SelectedIndex = 5;
         _loadingUi = false;
-        UpdateOptionEnabledState();
-        ApplyPreviewMode();
+        SetToolColor(Color.FromArgb(_settings.ToolArgb), apply: false);
+        SetTool(DrawTool.Select);
     }
 
-    private void OnOptionChanged(object? sender, EventArgs e)
+    private void SetTool(DrawTool tool)
     {
-        if (_loadingUi) return;
-        if (sender is RadioButton { Checked: false }) return; // handle only the newly checked one
-        _settings.Layout = _grid.Checked ? CombineLayout.Grid : _horizontal.Checked ? CombineLayout.Horizontal : CombineLayout.Vertical;
-        _settings.GridColumns = (int)_columns.Value;
-        _settings.Alignment = (CombineAlignment)Math.Max(0, _align.SelectedIndex);
-        _settings.Spacing = (int)_spacing.Value;
-        _settings.Margin = (int)_margin.Value;
-        _settings.MatchSize = _matchSize.Checked;
-        _settings.TransparentBackground = _transparent.Checked;
-        _settings.Border = _border.Checked;
-        _settings.BorderWidth = (int)_borderWidth.Value;
-        if (sender is RadioButton) UpdateAlignLabels();
-        UpdateOptionEnabledState();
-        InvalidateCombined();
+        _canvas.Tool = tool;
+        foreach (var (t, b) in _toolButtons) b.Checked = t == tool;
+        _canvas.Focus();
     }
 
-    private void UpdateAlignLabels()
+    private void SetToolColor(Color c, bool apply = true)
     {
-        string[] labels = _settings.Layout switch
-        {
-            CombineLayout.Vertical => new[] { "Left", "Center", "Right" },
-            CombineLayout.Horizontal => new[] { "Top", "Middle", "Bottom" },
-            _ => new[] { "Top-left", "Center", "Bottom-right" },
-        };
-        bool wasLoading = _loadingUi;
-        _loadingUi = true;
-        int idx = _align.SelectedIndex;
-        _align.Items.Clear();
-        _align.Items.AddRange(labels);
-        _align.SelectedIndex = idx < 0 ? 0 : idx;
-        _loadingUi = wasLoading;
+        _canvas.DrawColor = c;
+        _settings.ToolArgb = c.ToArgb();
+        _colorButton.Image?.Dispose();
+        _colorButton.Image = Swatch(c, _drawBar.ImageScalingSize.Width, current: true);
+        _colorButton.ToolTipText = $"Current color ({ColorName(c)}) — click for more colors";
+        if (apply) _canvas.ApplyStyleToSelection(color: true);
     }
 
-    private void UpdateOptionEnabledState()
+    private void PickToolColor()
     {
-        _columns.Enabled = _grid.Checked;
-        _bgColor.Enabled = !_transparent.Checked;
-        _borderColor.Enabled = _borderWidth.Enabled = _border.Checked;
-    }
-
-    private void PickColor(Button swatch, Action<Color> apply)
-    {
-        using var dlg = new ColorDialog { Color = swatch.BackColor, FullOpen = true };
+        using var dlg = new ColorDialog { Color = _canvas.DrawColor, FullOpen = true, CustomColors = _settings.CustomColors ?? Array.Empty<int>() };
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
-        swatch.BackColor = dlg.Color;
-        apply(dlg.Color);
-        InvalidateCombined();
-    }
-
-    // ------------------------------------------------------------------ snipping
-
-    private async Task SnipAsync(SnipMode mode)
-    {
-        if (_snipping) return;
-        _snipping = true;
-        bool windowWasVisible = Visible && WindowState != FormWindowState.Minimized;
-        int added = 0;
-        string? note = null;
-        try
-        {
-            if (windowWasVisible) Opacity = 0; // get out of the way of the screenshot
-            int delayMs = _settings.DelaySeconds * 1000;
-            while (true)
-            {
-                // Give the window/menus time to disappear (plus the optional user delay).
-                await Task.Delay(Math.Max(220, delayMs));
-                delayMs = 0;
-
-                Bitmap? result;
-                Rectangle area = Rectangle.Empty;
-                using (Bitmap screen = SnipOverlayForm.CaptureVirtualScreen(out Rectangle virtualBounds))
-                {
-                    if (mode == SnipMode.FullScreen)
-                    {
-                        Rectangle b = Screen.FromPoint(Cursor.Position).Bounds;
-                        b.Offset(-virtualBounds.X, -virtualBounds.Y);
-                        b.Intersect(new Rectangle(Point.Empty, screen.Size));
-                        result = screen.Clone(b, PixelFormat.Format32bppArgb);
-                    }
-                    else
-                    {
-                        string hint = mode == SnipMode.Scrolling
-                            ? "Scrolling capture: select the area that scrolls (e.g. the web page content) · Esc to cancel"
-                            : _settings.KeepSnipping
-                                ? $"Snip #{_snips.Count + 1}: drag to select · Esc to finish"
-                                : "Drag to select · Enter = whole screen · Esc to cancel";
-                        using var overlay = new SnipOverlayForm(screen, virtualBounds, hint);
-                        overlay.ShowDialog();
-                        result = overlay.Result;
-                        area = overlay.SelectedScreenArea;
-                    }
-                }
-
-                if (result == null) break;
-
-                if (mode == SnipMode.Scrolling)
-                {
-                    result.Dispose(); // only the area was needed; it is captured live while scrolling
-                    await Task.Delay(250); // let the overlay disappear
-                    var outcome = await ScrollingCapture.RunAsync(area, _settings.ScrollToTopFirst);
-                    result = outcome.Image;
-                    note = $"Scrolling capture: {outcome.Frames} screen(s) stitched, {result.Width} × {result.Height} px" +
-                           (outcome.StoppedByUser ? " (stopped with Esc)" : "") +
-                           (outcome.HitLimit ? " (stopped at the maximum length)" : "") +
-                           (outcome.UnmatchedSteps > 0 ? $". {outcome.UnmatchedSteps} step(s) could not be aligned exactly; check the result." : ".");
-                }
-
-                _pendingNote = note;
-                AddSnip(new SnipItem(result, mode.ToString()));
-                added++;
-                if (mode != SnipMode.Region || !_settings.KeepSnipping) break;
-            }
-        }
-        catch (Exception ex)
-        {
-            ShowError("Snipping failed", ex);
-        }
-        finally
-        {
-            _snipping = false;
-            if (windowWasVisible)
-            {
-                Opacity = 1;
-                Activate();
-            }
-            else if (added > 0)
-            {
-                _tray.ShowBalloonTip(2000, "Multi Snip",
-                    note ?? $"{added} snip(s) added — {_snips.Count} in total. Click to combine.", ToolTipIcon.Info);
-            }
-        }
-    }
-
-    // ------------------------------------------------------------------ snip list management
-
-    private void AddSnip(SnipItem item)
-    {
-        _snips.Add(item);
-        RefreshAll(selectIndex: _snips.Count - 1);
-    }
-
-    private void AddImages(IEnumerable<Bitmap> images, string source)
-    {
-        int before = _snips.Count;
-        foreach (Bitmap b in images) _snips.Add(new SnipItem(b, source));
-        if (_snips.Count != before) RefreshAll(selectIndex: _snips.Count - 1);
-    }
-
-    private IEnumerable<SnipItem> Selected() =>
-        _list.SelectedIndices.Cast<int>().OrderBy(i => i).Select(i => _snips[i]);
-
-    private void MoveSelected(int delta)
-    {
-        var selected = _list.SelectedIndices.Cast<int>().OrderBy(i => i).ToList();
-        if (selected.Count == 0) return;
-        if (delta < 0 && selected[0] == 0) return;
-        if (delta > 0 && selected[^1] == _snips.Count - 1) return;
-        if (delta > 0) selected.Reverse();
-        foreach (int i in selected)
-            (_snips[i], _snips[i + delta]) = (_snips[i + delta], _snips[i]);
-        RefreshAll(selected.Select(i => i + delta));
-    }
-
-    private void MoveSelectedTo(int target)
-    {
-        var selected = _list.SelectedIndices.Cast<int>().OrderBy(i => i).ToList();
-        if (selected.Count == 0) return;
-        var items = selected.Select(i => _snips[i]).ToList();
-        int insertAt = target - selected.Count(i => i < target);
-        foreach (int i in Enumerable.Reverse(selected)) _snips.RemoveAt(i);
-        insertAt = Math.Clamp(insertAt, 0, _snips.Count);
-        _snips.InsertRange(insertAt, items);
-        RefreshAll(Enumerable.Range(insertAt, items.Count));
-    }
-
-    private void RemoveSelected()
-    {
-        var selected = _list.SelectedIndices.Cast<int>().OrderByDescending(i => i).ToList();
-        if (selected.Count == 0) return;
-        foreach (int i in selected)
-        {
-            _snips[i].Dispose();
-            _snips.RemoveAt(i);
-        }
-        RefreshAll(selectIndex: Math.Min(selected[^1], _snips.Count - 1));
-    }
-
-    private void ClearAll()
-    {
-        if (_snips.Count == 0) return;
-        if (MessageBox.Show(this, $"Remove all {_snips.Count} snips?", "Multi Snip",
-                MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
-            return;
-        foreach (SnipItem s in _snips) s.Dispose();
-        _snips.Clear();
-        RefreshAll();
-    }
-
-    private void RefreshAll(int selectIndex) => RefreshAll(selectIndex >= 0 ? new[] { selectIndex } : Array.Empty<int>());
-
-    private void RefreshAll(IEnumerable<int>? select = null)
-    {
-        _list.BeginUpdate();
-        _list.Items.Clear();
-        _thumbs.Images.Clear();
-        for (int i = 0; i < _snips.Count; i++)
-        {
-            _snips[i].Thumbnail ??= MakeThumbnail(_snips[i].Image, _thumbs.ImageSize);
-            _thumbs.Images.Add(_snips[i].Thumbnail!);
-            _list.Items.Add(new ListViewItem($"{i + 1}.  {_snips[i].Image.Width} × {_snips[i].Image.Height}", i));
-        }
-        if (select != null)
-        {
-            foreach (int i in select)
-                if (i >= 0 && i < _list.Items.Count)
-                {
-                    _list.Items[i].Selected = true;
-                    _list.Items[i].EnsureVisible();
-                }
-        }
-        _list.EndUpdate();
-        InvalidateCombined();
-    }
-
-    private static Bitmap MakeThumbnail(Image src, Size box)
-    {
-        var thumb = new Bitmap(box.Width, box.Height, PixelFormat.Format32bppArgb);
-        using var g = Graphics.FromImage(thumb);
-        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-        g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-        double k = Math.Min(1.0, Math.Min((box.Width - 2) / (double)src.Width, (box.Height - 2) / (double)src.Height));
-        int w = Math.Max(1, (int)(src.Width * k)), h = Math.Max(1, (int)(src.Height * k));
-        var dest = new Rectangle((box.Width - w) / 2, (box.Height - h) / 2, w, h);
-        g.DrawImage(src, dest);
-        g.DrawRectangle(Pens.Silver, dest.X - 1, dest.Y - 1, dest.Width + 1, dest.Height + 1);
-        return thumb;
-    }
-
-    // ------------------------------------------------------------------ drag & drop
-
-    private void OnListDragOver(object? sender, DragEventArgs e)
-    {
-        if (e.Data?.GetDataPresent(InternalDragFormat) == true)
-        {
-            e.Effect = DragDropEffects.Move;
-            Point pt = _list.PointToClient(new Point(e.X, e.Y));
-            int idx = _list.InsertionMark.NearestIndex(pt);
-            if (idx >= 0)
-            {
-                Rectangle r = _list.GetItemRect(idx);
-                _list.InsertionMark.AppearsAfterItem = pt.Y > r.Bottom || (pt.Y >= r.Top && pt.X > r.Left + r.Width / 2);
-            }
-            _list.InsertionMark.Index = idx;
-        }
-        else
-        {
-            OnExternalDragEnter(sender, e);
-        }
-    }
-
-    private void OnListDragDrop(object? sender, DragEventArgs e)
-    {
-        if (e.Data?.GetData(InternalDragFormat) is int from)
-        {
-            int mark = _list.InsertionMark.Index;
-            bool after = _list.InsertionMark.AppearsAfterItem;
-            _list.InsertionMark.Index = -1;
-            if (mark < 0) return;
-            int target = mark + (after ? 1 : 0);
-            if (!_list.SelectedIndices.Contains(from))
-            {
-                _list.SelectedIndices.Clear();
-                _list.SelectedIndices.Add(from);
-            }
-            MoveSelectedTo(target);
-        }
-        else
-        {
-            OnExternalDragDrop(sender, e);
-        }
-    }
-
-    private void OnExternalDragEnter(object? sender, DragEventArgs e)
-    {
-        bool ok = e.Data != null && !e.Data.GetDataPresent(InternalDragFormat) &&
-                  (e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetDataPresent(DataFormats.Bitmap));
-        e.Effect = ok ? DragDropEffects.Copy : DragDropEffects.None;
-    }
-
-    private void OnExternalDragDrop(object? sender, DragEventArgs e)
-    {
-        if (e.Data == null || e.Data.GetDataPresent(InternalDragFormat)) return;
-        if (e.Data.GetData(DataFormats.FileDrop) is string[] files)
-            AddImages(LoadImageFiles(files), "File");
-        else if (e.Data.GetData(DataFormats.Bitmap) is Image img)
-            AddImages(new[] { ToArgb(img) }, "Dropped");
-    }
-
-    private void OnPreviewMouseMove(object? sender, MouseEventArgs e)
-    {
-        if (e.Button != MouseButtons.Left || _snips.Count == 0) return;
-        Size drag = SystemInformation.DragSize;
-        if (Math.Abs(e.X - _previewDragStart.X) < drag.Width && Math.Abs(e.Y - _previewDragStart.Y) < drag.Height) return;
-
-        Bitmap combined = GetCombined();
-        try
-        {
-            string dir = Path.Combine(Path.GetTempPath(), "MultiSnip");
-            Directory.CreateDirectory(dir);
-            string file = Path.Combine(dir, DefaultFileName() + ".png");
-            combined.Save(file, ImageFormat.Png);
-            var data = new DataObject();
-            data.SetData(DataFormats.FileDrop, new[] { file });
-            using Bitmap flat = Flatten(combined, Color.White);
-            data.SetData(DataFormats.Bitmap, flat);
-            _preview.DoDragDrop(data, DragDropEffects.Copy);
-        }
-        catch (Exception ex)
-        {
-            ShowError("Could not start drag", ex);
-        }
-    }
-
-    // ------------------------------------------------------------------ clipboard & files
-
-    private void PasteFromClipboard()
-    {
-        try
-        {
-            if (Clipboard.ContainsFileDropList())
-            {
-                AddImages(LoadImageFiles(Clipboard.GetFileDropList().Cast<string>()), "File");
-            }
-            else if (Clipboard.ContainsImage() && Clipboard.GetImage() is Image img)
-            {
-                using (img) AddImages(new[] { ToArgb(img) }, "Pasted");
-            }
-            else
-            {
-                SetStatus("The clipboard does not contain an image.");
-            }
-        }
-        catch (Exception ex)
-        {
-            ShowError("Paste failed", ex);
-        }
-    }
-
-    private void OpenFiles()
-    {
-        using var dlg = new OpenFileDialog
-        {
-            Title = "Add images",
-            Multiselect = true,
-            Filter = "Images|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff|All files|*.*",
-        };
-        if (dlg.ShowDialog(this) == DialogResult.OK)
-            AddImages(LoadImageFiles(dlg.FileNames), "File");
-    }
-
-    private List<Bitmap> LoadImageFiles(IEnumerable<string> files)
-    {
-        var result = new List<Bitmap>();
-        var failed = new List<string>();
-        foreach (string f in files)
-        {
-            try
-            {
-                using var fs = File.OpenRead(f);
-                using var img = Image.FromStream(fs);
-                result.Add(ToArgb(img));
-            }
-            catch
-            {
-                failed.Add(Path.GetFileName(f));
-            }
-        }
-        if (failed.Count > 0)
-            SetStatus("Skipped (not an image): " + string.Join(", ", failed));
-        return result;
-    }
-
-    /// <summary>Copies any image into a plain 32-bit bitmap (normalises DPI and pixel format, releases file locks).</summary>
-    private static Bitmap ToArgb(Image img)
-    {
-        var bmp = new Bitmap(img.Width, img.Height, PixelFormat.Format32bppArgb);
-        using var g = Graphics.FromImage(bmp);
-        g.DrawImage(img, new Rectangle(0, 0, img.Width, img.Height));
-        return bmp;
-    }
-
-    private void CopyCombined()
-    {
-        if (_snips.Count == 0) { SetStatus("Nothing to copy yet — take a snip first."); return; }
-        Bitmap c = GetCombined();
-        SetClipboardImage(c);
-        SetStatus($"Copied combined image ({c.Width} × {c.Height}) to the clipboard.");
-    }
-
-    private void SetClipboardImage(Bitmap image)
-    {
-        try
-        {
-            var data = new DataObject();
-            // Plain bitmap for apps like Paint/Word, PNG (keeps transparency) for apps that support it.
-            using Bitmap flat = Flatten(image, Color.White);
-            data.SetData(DataFormats.Bitmap, true, flat);
-            using var png = new MemoryStream();
-            image.Save(png, ImageFormat.Png);
-            data.SetData("PNG", false, png);
-            Clipboard.SetDataObject(data, true, 5, 100); // copy=true renders all formats now
-        }
-        catch (Exception ex)
-        {
-            ShowError("Copy failed", ex);
-        }
-    }
-
-    private void SaveCombined()
-    {
-        if (_snips.Count == 0) { SetStatus("Nothing to save yet — take a snip first."); return; }
-        SaveImage(GetCombined(), DefaultFileName());
-    }
-
-    private void SaveImage(Bitmap image, string defaultName)
-    {
-        using var dlg = new SaveFileDialog
-        {
-            Title = "Save image",
-            FileName = defaultName,
-            Filter = "PNG image|*.png|JPEG image|*.jpg|Bitmap image|*.bmp|GIF image|*.gif",
-            DefaultExt = "png",
-            AddExtension = true,
-        };
-        if (!string.IsNullOrEmpty(_settings.LastSaveFolder) && Directory.Exists(_settings.LastSaveFolder))
-            dlg.InitialDirectory = _settings.LastSaveFolder;
-        if (dlg.ShowDialog(this) != DialogResult.OK) return;
-
-        try
-        {
-            string ext = Path.GetExtension(dlg.FileName).ToLowerInvariant();
-            Color flattenColor = _settings.TransparentBackground ? Color.White : Color.FromArgb(255, Color.FromArgb(_settings.BackgroundArgb));
-            switch (ext)
-            {
-                case ".jpg" or ".jpeg":
-                {
-                    using Bitmap flat = Flatten(image, flattenColor);
-                    ImageCodecInfo codec = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
-                    using var p = new EncoderParameters(1);
-                    p.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 92L);
-                    flat.Save(dlg.FileName, codec, p);
-                    break;
-                }
-                case ".bmp":
-                {
-                    using Bitmap flat = Flatten(image, flattenColor);
-                    flat.Save(dlg.FileName, ImageFormat.Bmp);
-                    break;
-                }
-                case ".gif":
-                    image.Save(dlg.FileName, ImageFormat.Gif);
-                    break;
-                default:
-                    image.Save(dlg.FileName, ImageFormat.Png);
-                    break;
-            }
-            _settings.LastSaveFolder = Path.GetDirectoryName(dlg.FileName);
-            SetStatus($"Saved {dlg.FileName}");
-        }
-        catch (Exception ex)
-        {
-            ShowError("Save failed", ex);
-        }
-    }
-
-    private static Bitmap Flatten(Bitmap image, Color background)
-    {
-        var flat = new Bitmap(image.Width, image.Height, PixelFormat.Format24bppRgb);
-        using var g = Graphics.FromImage(flat);
-        g.Clear(background);
-        g.DrawImageUnscaled(image, 0, 0);
-        return flat;
-    }
-
-    private static string DefaultFileName() => $"MultiSnip_{DateTime.Now:yyyyMMdd_HHmmss}";
-
-    // ------------------------------------------------------------------ preview
-
-    private void InvalidateCombined()
-    {
-        _combinedDirty = true;
-        _renderTimer.Stop();
-        _renderTimer.Start();
-    }
-
-    private Bitmap GetCombined()
-    {
-        if (_combinedDirty || _combined == null) RenderPreview();
-        return _combined!;
-    }
-
-    private void RenderPreview()
-    {
-        _renderTimer.Stop();
-        Bitmap? old = _combined;
-        _combined = _snips.Count > 0 ? ImageCombiner.Combine(_snips.Select(s => (Image)s.Image).ToList(), _settings.ToCombineOptions()) : null;
-        _combinedDirty = false;
-        _preview.Image = _combined;
-        old?.Dispose();
-
-        bool empty = _combined == null;
-        _emptyHint.Visible = empty;
-        _preview.Visible = !empty;
-        ApplyPreviewMode();
-        SetStatus(empty
-            ? "No snips yet."
-            : $"{_snips.Count} snip(s) · combined image {_combined!.Width} × {_combined.Height} px" +
-              (_pendingNote != null ? " · " + _pendingNote : ""));
-        _pendingNote = null;
-    }
-
-    private void ApplyPreviewMode()
-    {
-        if (_fitPreview.Checked)
-        {
-            _preview.SizeMode = PictureBoxSizeMode.Zoom;
-            _preview.Dock = DockStyle.Fill;
-        }
-        else
-        {
-            _preview.Dock = DockStyle.None;
-            _preview.SizeMode = PictureBoxSizeMode.AutoSize;
-            _preview.Location = new Point(_previewPanel.AutoScrollPosition.X, _previewPanel.AutoScrollPosition.Y);
-        }
-        _preview.Cursor = Cursors.Hand;
-    }
-
-    private void SetStatus(string text) => _status.Text = text;
-
-    private void ShowError(string title, Exception ex) =>
-        MessageBox.Show(this, ex.Message, $"Multi Snip — {title}", MessageBoxButtons.OK, MessageBoxIcon.Error);
-
-    // ------------------------------------------------------------------ window, hotkey, keyboard
-
-    private void ShowAndActivate()
-    {
-        if (!Visible) Show();
-        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
-        Activate();
-        BringToFront();
-    }
-
-    private string HotkeyText => Hotkey.Format(_settings.SnipHotkey);
-
-    /// <summary>Registers <paramref name="keys"/> as the global hotkey. Returns false if Windows refuses it.</summary>
-    private bool RegisterSnipHotkey(Keys keys)
-    {
-        UnregisterSnipHotkey();
-        if (keys == Keys.None || !IsHandleCreated) return keys == Keys.None;
-        _hotkeyRegistered = NativeMethods.RegisterHotKey(Handle, HotkeyId, Hotkey.Modifiers(keys), (uint)(keys & Keys.KeyCode));
-        return _hotkeyRegistered;
-    }
-
-    private void UnregisterSnipHotkey()
-    {
-        if (_hotkeyRegistered && IsHandleCreated) NativeMethods.UnregisterHotKey(Handle, HotkeyId);
-        _hotkeyRegistered = false;
-    }
-
-    private void ChangeHotkey()
-    {
-        Keys previous = _settings.SnipHotkey;
-        UnregisterSnipHotkey(); // so pressing the current hotkey in the dialog doesn't start a snip
-        using var dlg = new HotkeyDialog(previous, keys =>
-            RegisterSnipHotkey(keys) ? null
-                : $"{Hotkey.Format(keys)} is already used by Windows or another app. Please choose another combination.");
-        if (dlg.ShowDialog(this) == DialogResult.OK)
-        {
-            _settings.SnipHotkey = dlg.Selected;
-            _settings.Save();
-            SetStatus(dlg.Selected == Keys.None ? "Global hotkey turned off." : $"Global hotkey set to {HotkeyText}.");
-        }
-        else
-        {
-            RegisterSnipHotkey(previous);
-        }
-        UpdateHotkeyTexts();
-    }
-
-    /// <summary>Refreshes every place that mentions the hotkey (status bar, tray tooltip, empty-state hint).</summary>
-    private void UpdateHotkeyTexts()
-    {
-        bool off = _settings.SnipHotkey == Keys.None;
-        _hotkeyStatus.Text = off ? "Global hotkey: off"
-            : _hotkeyRegistered ? $"Global hotkey: {HotkeyText}"
-            : $"Global hotkey: {HotkeyText} (unavailable)";
-        string tray = off ? "Multi Snip" : $"Multi Snip — {HotkeyText} to snip";
-        _tray.Text = tray.Length > 63 ? tray[..63] : tray; // NotifyIcon text limit
-        _emptyHint.Text =
-            "Click  ✂ New Snip  (Ctrl+N)  to capture part of the screen.\n\n" +
-            (off ? "Set a global hotkey with  ⌨ Hotkey…  to snip from anywhere in Windows.\n\n"
-                 : $"Press  {HotkeyText}  anywhere in Windows to snip, even when this window is minimized.\n\n") +
-            "You can also paste (Ctrl+V), open, or drag & drop images here.\n\n" +
-            "Then choose Vertical / Horizontal / Grid and Copy or Save the combined image.";
-    }
-
-    protected override void OnHandleCreated(EventArgs e)
-    {
-        base.OnHandleCreated(e);
-        if (Hotkey.Validate(_settings.SnipHotkey) != null) _settings.SnipHotkey = Hotkey.Default; // hand-edited settings
-        RegisterSnipHotkey(_settings.SnipHotkey);
-    }
-
-    protected override void OnShown(EventArgs e)
-    {
-        base.OnShown(e);
-        UpdateHotkeyTexts();
-        if (!_hotkeyRegistered && _settings.SnipHotkey != Keys.None)
-            SetStatus($"Note: {HotkeyText} is used by another app, so the global hotkey is unavailable. Click ⌨ Hotkey… to pick another.");
-    }
-
-    protected override void OnHandleDestroyed(EventArgs e)
-    {
-        UnregisterSnipHotkey();
-        base.OnHandleDestroyed(e);
-    }
-
-    protected override void WndProc(ref Message m)
-    {
-        if (m.Msg == NativeMethods.WM_HOTKEY && m.WParam == (IntPtr)HotkeyId)
-        {
-            _ = SnipAsync(SnipMode.Region);
-            return;
-        }
-        if (m.Msg == NativeMethods.WM_SHOWME && NativeMethods.WM_SHOWME != 0)
-        {
-            ShowAndActivate();
-            return;
-        }
-        base.WndProc(ref m);
-    }
-
-    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
-    {
-        bool editingText = FocusedControl() is TextBoxBase or UpDownBase || FocusedControl()?.Parent is UpDownBase;
-        switch (keyData)
-        {
-            case Keys.Control | Keys.N: _ = SnipAsync(SnipMode.Region); return true;
-            case Keys.Control | Keys.Shift | Keys.N: _ = SnipAsync(SnipMode.FullScreen); return true;
-            case Keys.Control | Keys.Shift | Keys.R: _ = SnipAsync(SnipMode.Scrolling); return true;
-            case Keys.Control | Keys.O: OpenFiles(); return true;
-            case Keys.Control | Keys.S: SaveCombined(); return true;
-            case Keys.Control | Keys.V when !editingText: PasteFromClipboard(); return true;
-            case Keys.Control | Keys.C when !editingText: CopyCombined(); return true;
-            case Keys.Control | Keys.Up: MoveSelected(-1); return true;
-            case Keys.Control | Keys.Down: MoveSelected(1); return true;
-        }
-        return base.ProcessCmdKey(ref msg, keyData);
-    }
-
-    private Control? FocusedControl()
-    {
-        Control? c = ActiveControl;
-        while (c is ContainerControl { ActiveControl: { } inner }) c = inner;
-        return c;
-    }
-
-    protected override void OnFormClosing(FormClosingEventArgs e)
-    {
-        _settings.Save();
-        base.OnFormClosing(e);
-    }
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing)
-        {
-            _tray.Visible = false;
-            _tray.Dispose();
-            _renderTimer.Dispose();
-            _combined?.Dispose();
-            foreach (SnipItem s in _snips) s.Dispose();
-        }
-        base.Dispose(disposing);
+        _settings.CustomColors = dlg.CustomColors;
+        SetToolColor(dlg.Color);
     }
 }

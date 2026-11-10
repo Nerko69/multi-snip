@@ -4,6 +4,31 @@ All notable changes to Multi Snip (by WebProgress.AI). The version is set in
 `src/MultiSnip/MultiSnip.csproj` (`<Version>`, `<FileVersion>`, `<AssemblyVersion>`);
 bump it there and add an entry here for every release.
 
+## [1.3.0] - 2026-11-10
+
+### Added
+- **Drawing and labels, like Paint**: pen, marker (highlighter), eraser, line, arrow, rectangle, ellipse (outline or
+  filled), text labels (bold, optional white box), and **numbered round / square labels** that count up
+  automatically, with "Next #" and "Renumber 1-2-3". The 20 Paint colors plus custom colors; line and text sizes.
+  Drawings stay editable objects: select, move (mouse or arrow keys), restyle, edit text, delete; Undo / Redo.
+- **Tabs**: several projects at once, each with its own snips, options, undo history and save location. Move snips
+  between tabs. Open tabs are restored automatically after a restart.
+- **Zoom**: slider and percentage box (Fit, 25 %–800 %), Ctrl + mouse wheel, Ctrl+0 / Ctrl+1, middle-button panning.
+- **Editable save files**: Save writes a normal PNG that also stores the original snips, their order, drawings and
+  options. Opening it in Multi Snip restores everything for re-arranging and editing.
+- File names get a timestamp suffix (`_2026-01_11-18-20-00`); once saved, the full path is shown in the title bar
+  and Ctrl+S keeps saving to the same file. Save As (F12), Export plain image (Ctrl+E).
+- **Open Recent** files and **Recent Folders** history (also shown in the file dialogs).
+- Grid: **Auto** (square grids like 3 × 3, 4 × 4, 5 × 5…) or up to 20 columns, with the resulting size shown.
+- **Output size** (100 % / 75 % / 50 % / 33 % / 25 %) to keep large combinations manageable.
+- Menus (File, Edit, Capture, View, Help), "Drag Out" button, copy/save a single snip with its drawings.
+- Built-in self-test (`MultiSnip.exe --self-test`) that the build runs on Windows.
+
+### Changed
+- Paste (Ctrl+V) adds the clipboard image as the next snip of the current tab; pasting or dropping a saved
+  Multi Snip PNG opens it as a tab.
+- The Delete key removes the selected drawing first, otherwise the selected snips. Removing snips can be undone.
+
 ## [1.2.0] - 2026-10-13
 
 ### Added

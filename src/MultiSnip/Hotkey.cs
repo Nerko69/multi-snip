@@ -10,6 +10,9 @@ internal static class Hotkey
     {
         Keys.Control | Keys.N, Keys.Control | Keys.Shift | Keys.N, Keys.Control | Keys.Shift | Keys.R, Keys.Control | Keys.O, Keys.Control | Keys.S,
         Keys.Control | Keys.V, Keys.Control | Keys.C, Keys.Control | Keys.Up, Keys.Control | Keys.Down,
+        Keys.Control | Keys.T, Keys.Control | Keys.W, Keys.Control | Keys.Tab, Keys.Control | Keys.Shift | Keys.Tab,
+        Keys.Control | Keys.Z, Keys.Control | Keys.Y, Keys.Control | Keys.Shift | Keys.Z, Keys.Control | Keys.E, Keys.F12,
+        Keys.Control | Keys.D0, Keys.Control | Keys.D1, Keys.Control | Keys.Oemplus, Keys.Control | Keys.OemMinus,
     };
 
     public static string Format(Keys keys)

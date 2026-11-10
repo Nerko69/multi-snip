@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Self-checking tests for the platform-independent parts of Multi Snip (no GDI+/WinForms needed).
+       Run it with "dotnet run" from this folder; the exit code is the number of failures. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Using Include="System.Drawing" />
+    <Compile Include="../../src/MultiSnip/ScrollStitcher.cs" Link="Src/ScrollStitcher.cs" />
+    <Compile Include="../../src/MultiSnip/CombineLayout.cs" Link="Src/CombineLayout.cs" />
+    <Compile Include="../../src/MultiSnip/Annotation.cs" Link="Src/Annotation.cs" />
+    <Compile Include="../../src/MultiSnip/FileNames.cs" Link="Src/FileNames.cs" />
+    <Compile Include="../../src/MultiSnip/EditablePng.cs" Link="Src/EditablePng.cs" />
+    <Compile Include="../../src/MultiSnip/ProjectArchive.cs" Link="Src/ProjectArchive.cs" />
+  </ItemGroup>
+</Project>
