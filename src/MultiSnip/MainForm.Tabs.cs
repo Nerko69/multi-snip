@@ -12,25 +12,15 @@ public sealed partial class MainForm
     {
         project ??= new Project(_settings.ToCombineOptions());
         _projects.Add(project);
-        _tabs.TabPages.Add(new TabPage(project.DisplayName));
-        FitTabStrip();
         ActivateProject(project);
         return project;
-    }
-
-    /// <summary>Only the tab headers are shown (the content area is shared), so size the strip to them.</summary>
-    private void FitTabStrip()
-    {
-        if (_tabs.TabCount > 0 && _tabs.IsHandleCreated) _tabs.Height = _tabs.GetTabRect(0).Bottom + 2;
-        else _tabs.Height = _tabs.Font.Height + 14;
     }
 
     private void ActivateProject(Project p)
     {
         _canvas.CommitPendingEdits();
         _project = p;
-        int index = _projects.IndexOf(p);
-        if (_tabs.SelectedIndex != index) _tabs.SelectedIndex = index;
+        _canvas.ClearArea();
         LoadOptionsIntoUi();
         RefreshAll();
         RenderPreview();
@@ -57,22 +47,17 @@ public sealed partial class MainForm
         }
         int index = _projects.IndexOf(p);
         _projects.RemoveAt(index);
-        _tabs.TabPages.RemoveAt(index);
         if (_projects.Count == 0) NewTab();
         else if (ReferenceEquals(p, _project)) ActivateProject(_projects[Math.Min(index, _projects.Count - 1)]);
+        else UpdateTitle();
         return true;
     }
 
     /// <summary>Updates the tab captions and the window title (full path of the saved file).</summary>
     private void UpdateTitle()
     {
-        for (int i = 0; i < _projects.Count && i < _tabs.TabCount; i++)
-        {
-            Project p = _projects[i];
-            string text = p.DisplayName + (p.Dirty && p.Snips.Count > 0 ? " *" : "");
-            if (_tabs.TabPages[i].Text != text) _tabs.TabPages[i].Text = text;
-            _tabs.TabPages[i].ToolTipText = p.FilePath ?? "Not saved yet";
-        }
+        _tabs.SetTabs(_projects.Select(p => (p.DisplayName + (p.Dirty && p.Snips.Count > 0 ? " *" : ""), p.FilePath ?? "Not saved yet")),
+            _projects.IndexOf(_project));
         string where = _project.FilePath ?? $"{_project.UntitledName} (not saved yet)";
         Text = $"{where}{(_project.Dirty && _project.Snips.Count > 0 ? " *" : "")} — Multi Snip v{AppInfo.Version}";
         UpdateUndoState();
@@ -110,6 +95,10 @@ public sealed partial class MainForm
         _vertical.Checked = o.Layout == CombineLayout.Vertical;
         _horizontal.Checked = o.Layout == CombineLayout.Horizontal;
         _grid.Checked = o.Layout == CombineLayout.Grid;
+        _overlay.Checked = o.Layout == CombineLayout.Overlay;
+        _divider.Checked = o.Divider;
+        _dividerWidth.Value = Math.Clamp(o.DividerWidth, 1, 40);
+        _dividerColor.BackColor = Color.FromArgb(255, o.DividerColor);
         int col = Array.IndexOf(GridColumnChoices, o.GridColumns);
         if (o.GridColumns > 0 && col < 0)
         {
@@ -140,7 +129,9 @@ public sealed partial class MainForm
         if (sender is RadioButton { Checked: false }) return; // handle only the newly checked one
         _project.Checkpoint();
         CombineOptions o = _project.Options;
-        o.Layout = _grid.Checked ? CombineLayout.Grid : _horizontal.Checked ? CombineLayout.Horizontal : CombineLayout.Vertical;
+        o.Layout = _overlay.Checked ? CombineLayout.Overlay : _grid.Checked ? CombineLayout.Grid : _horizontal.Checked ? CombineLayout.Horizontal : CombineLayout.Vertical;
+        o.Divider = _divider.Checked;
+        o.DividerWidth = (int)_dividerWidth.Value;
         o.GridColumns = _columns.SelectedIndex <= 0 ? 0 : int.Parse(((string)_columns.SelectedItem!).Split(' ')[0]);
         o.Alignment = (CombineAlignment)Math.Max(0, _align.SelectedIndex);
         o.Spacing = (int)_spacing.Value;
@@ -161,7 +152,7 @@ public sealed partial class MainForm
     {
         string[] labels = layout switch
         {
-            CombineLayout.Vertical => new[] { "Left", "Center", "Right" },
+            CombineLayout.Vertical or CombineLayout.Overlay => new[] { "Left", "Center", "Right" },
             CombineLayout.Horizontal => new[] { "Top", "Middle", "Bottom" },
             _ => new[] { "Top-left", "Center", "Bottom-right" },
         };
@@ -177,12 +168,87 @@ public sealed partial class MainForm
     private void UpdateOptionEnabledState()
     {
         _columns.Enabled = _grid.Checked;
+        bool overlay = _overlay.Checked;
+        _align.Enabled = _spacing.Enabled = _matchSize.Enabled = _divider.Enabled = !overlay;
+        _dividerColor.Enabled = _dividerWidth.Enabled = _divider.Checked && !overlay;
         _gridInfo.Visible = _grid.Checked;
         int n = _project.Snips.Count;
         int cols = _project.Options.EffectiveColumns(n);
         _gridInfo.Text = n == 0 ? "" : $"= {cols} × {(n + cols - 1) / cols}";
         _bgColor.Enabled = !_transparent.Checked;
         _borderColor.Enabled = _borderWidth.Enabled = _border.Checked;
+    }
+
+    // ------------------------------------------------------------------ watermark
+
+    private void EditWatermark()
+    {
+        _canvas.CommitPendingEdits();
+        Bitmap? sample = null;
+        if (_project.Snips.Count > 0)
+        {
+            sample = Project.RenderComposite(_project.Snips, _project.Options);
+        }
+        using var dlg = new WatermarkDialog(_project.Options.Watermark, sample, () => _settings.CustomColors, c => _settings.CustomColors = c);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        _project.Checkpoint();
+        _project.Options.Watermark = dlg.Result.Clone();
+        _settings.RememberOptions(_project.Options);
+        _settings.Save();
+        UpdateTitle();
+        RenderPreview();
+        SetStatus(dlg.Result.Enabled ? "Watermark on — it is added to saved, exported, copied and dragged images." : "Watermark off.");
+    }
+
+    // ------------------------------------------------------------------ save each snip separately
+
+    /// <summary>Saves every snip (with its drawings) as its own file: Name-01.png, Name-02.png, …</summary>
+    private void ExportEachSnip()
+    {
+        _canvas.CommitPendingEdits();
+        if (_project.Snips.Count == 0) { SetStatus("Nothing to save yet — take a snip first."); return; }
+        string baseName = FileNames.StripTimestamp(_project.FilePath != null ? Path.GetFileNameWithoutExtension(_project.FilePath) : FileNames.DefaultBaseName);
+        using var dlg = new SaveFileDialog
+        {
+            Title = "Save each snip separately — choose the folder and base name (\"-01\", \"-02\"… is added)",
+            FileName = baseName,
+            Filter = "PNG images|*.png|JPEG images|*.jpg|Bitmap images|*.bmp",
+            DefaultExt = "png",
+            AddExtension = true,
+            OverwritePrompt = false,
+        };
+        PrepareDialog(dlg, SuggestFolder(_project.FilePath));
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+        string folder = Path.GetDirectoryName(dlg.FileName)!;
+        string ext = Path.GetExtension(dlg.FileName);
+        string name = Path.GetFileNameWithoutExtension(dlg.FileName);
+        int digits = Math.Max(2, _project.Snips.Count.ToString().Length);
+        var paths = Enumerable.Range(1, _project.Snips.Count).Select(i => Path.Combine(folder, $"{name}-{i.ToString().PadLeft(digits, '0')}{ext}")).ToList();
+        int existing = paths.Count(File.Exists);
+        if (existing > 0 && MessageBox.Show(this, $"{existing} of these files already exist (e.g. {Path.GetFileName(paths.First(File.Exists))}). Replace them?",
+                "Multi Snip", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
+            return;
+        try
+        {
+            Cursor = Cursors.WaitCursor;
+            Color flatten = _project.Options.TransparentBackground ? Color.White : Color.FromArgb(255, _project.Options.Background);
+            for (int i = 0; i < _project.Snips.Count; i++)
+            {
+                using Bitmap b = _project.RenderSnip(_project.Snips[i]);
+                ImageUtil.SaveByExtension(b, paths[i], flatten);
+            }
+            RememberSave(paths[0], isProject: false);
+            SetStatus($"Saved {paths.Count} snips: {Path.GetFileName(paths[0])} … {Path.GetFileName(paths[^1])} in {folder}");
+        }
+        catch (Exception ex)
+        {
+            ShowError("Saving the snips failed", ex);
+        }
+        finally
+        {
+            Cursor = Cursors.Default;
+        }
     }
 
     private void PickOptionColor(Button swatch, Action<CombineOptions, Color> apply)
@@ -390,7 +456,6 @@ public sealed partial class MainForm
                 {
                     int i = _projects.IndexOf(_project);
                     _projects[i] = project;
-                    _tabs.TabPages[i].Text = project.DisplayName;
                     ActivateProject(project);
                 }
                 else

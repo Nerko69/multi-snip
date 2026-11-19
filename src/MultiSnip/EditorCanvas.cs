@@ -3,7 +3,7 @@ using System.Drawing.Imaging;
 
 namespace MultiSnip;
 
-public enum DrawTool { Select, Pen, Marker, Eraser, Line, Arrow, Rectangle, Ellipse, Text, BadgeCircle, BadgeSquare }
+public enum DrawTool { Select, Area, Pen, Marker, Eraser, Line, Arrow, Rectangle, Ellipse, Text, BadgeCircle, BadgeSquare }
 
 /// <summary>
 /// Shows the combined image at any zoom and lets the user draw on it like in Paint. Drawings are stored as
@@ -15,6 +15,21 @@ public sealed class EditorCanvas : ScrollableControl
     private const int Pad = 16;
 
     private Project? _project;
+    private IReadOnlyList<SnipItem>? _snips;   // what is shown: all snips, or a single one
+    private bool _overlayEditing;               // overlay layout: snips 2..n can be moved/resized
+
+    // area selection (Area tool), in snip pixels
+    private (int Snip, Rectangle Rect)? _area;
+    private bool _areaDragging;
+    private PointF _areaStart;
+
+    // overlay move / resize
+    private enum OverlayDrag { None, Move, TopLeft, TopRight, BottomLeft, BottomRight }
+    private int _overlaySel = -1;
+    private OverlayDrag _overlayDrag;
+    private bool _overlayCheckpointed;
+    private PointF _overlayStartMouse;
+    private RectangleF _overlayStartRect;
     private Bitmap? _base;
     private CombinedLayout? _layout;
     private Bitmap? _scaled;          // cache of the base image drawn below 100% zoom
@@ -57,11 +72,31 @@ public sealed class EditorCanvas : ScrollableControl
     public bool BoldText { get; set; } = true;
     public string EmptyText { get; set; } = "";
 
+    /// <summary>Watermark previewed on top of the combined image (null when viewing a single snip).</summary>
+    public WatermarkOptions? Watermark { get; set; }
+
     /// <summary>Raised after the drawings changed (the tab is now modified).</summary>
     public event EventHandler? DocumentChanged;
     public event EventHandler? ZoomChanged;
     public event EventHandler<int>? SnipClicked;
     public event EventHandler? SelectionChanged;
+
+    /// <summary>The area selection changed (Area tool).</summary>
+    public event EventHandler? AreaChanged;
+
+    /// <summary>An overlay snip was moved or resized: the combined image must be re-rendered.</summary>
+    public event EventHandler? OverlayChanged;
+
+    /// <summary>Area tool selection: view index of the snip and the rectangle in its pixels.</summary>
+    public (int Snip, Rectangle Rect)? AreaSelection => _area;
+
+    public void ClearArea()
+    {
+        if (_area == null) return;
+        _area = null;
+        AreaChanged?.Invoke(this, EventArgs.Empty);
+        Invalidate();
+    }
 
     public DrawTool Tool
     {
@@ -70,7 +105,8 @@ public sealed class EditorCanvas : ScrollableControl
         {
             CommitText();
             _tool = value;
-            if (value != DrawTool.Select) Select(null);
+            if (value != DrawTool.Select) { Select(null); _overlaySel = -1; }
+            if (value != DrawTool.Area) ClearArea();
             Cursor = value switch
             {
                 DrawTool.Select => Cursors.Default,
@@ -84,17 +120,32 @@ public sealed class EditorCanvas : ScrollableControl
     public bool HasSelection => _selected != null;
     public Annotation? SelectedAnnotation => _selected?.A;
 
-    /// <summary>Shows a tab. <paramref name="baseImage"/> (snips without drawings) is owned by the caller.</summary>
-    public void SetDocument(Project? project, Bitmap? baseImage, CombinedLayout? layout)
+    /// <summary>
+    /// Shows a tab: <paramref name="snips"/> are the snips on screen (all of them, or one) and <paramref name="layout"/>
+    /// where they are. <paramref name="baseImage"/> (snips without drawings) is owned by the caller.
+    /// </summary>
+    public void SetDocument(Project? project, IReadOnlyList<SnipItem>? snips, Bitmap? baseImage, CombinedLayout? layout, bool overlayEditing)
     {
+        bool sameView = ReferenceEquals(project, _project) && snips != null && _snips != null &&
+                        snips.Count == _snips.Count && snips.Select((x, i) => ReferenceEquals(x, _snips[i])).All(b => b);
         if (!ReferenceEquals(project, _project)) CancelText();
-        bool newProject = !ReferenceEquals(project, _project);
         _project = project;
+        _snips = snips;
         _base = baseImage;
         _layout = layout;
-        _draft = null;
-        if (newProject || (_selected is { } s && (s.Snip >= (project?.Snips.Count ?? 0) || !project!.Snips[s.Snip].Annotations.Contains(s.A))))
+        _overlayEditing = overlayEditing;
+        if (_overlayDrag == OverlayDrag.None) _draft = null; // keep an overlay drag going while we re-render
+        if (!sameView)
+        {
             Select(null);
+            ClearArea();
+            if (_overlayDrag == OverlayDrag.None) _overlaySel = -1;
+        }
+        else if (_selected is { } s && (s.Snip >= (snips?.Count ?? 0) || !snips![s.Snip].Annotations.Contains(s.A)))
+        {
+            Select(null);
+        }
+        if (!overlayEditing) _overlaySel = -1;
         InvalidateScaledCache();
         UpdateScrollSize();
         Invalidate();
@@ -141,7 +192,7 @@ public sealed class EditorCanvas : ScrollableControl
     {
         if (_project == null || _selected is not { } s) return;
         _project.Checkpoint();
-        _project.Snips[s.Snip].Annotations.Remove(s.A);
+        _snips![s.Snip].Annotations.Remove(s.A);
         Select(null);
         RaiseChanged(s.Snip);
     }
@@ -192,19 +243,19 @@ public sealed class EditorCanvas : ScrollableControl
         return new PointF((p.X - o.X) / z, (p.Y - o.Y) / z);
     }
 
-    private float SnipScale(int i) => _layout!.ImageRects[i].Width / (float)_project!.Snips[i].Image.Width;
+    private float SnipScale(int i) => _layout!.ImageRects[i].Width / (float)_snips![i].Image.Width;
 
     private PointF ImageToSnip(PointF ip, int i)
     {
         Rectangle r = _layout!.ImageRects[i];
-        Size img = _project!.Snips[i].Image.Size;
+        Size img = _snips![i].Image.Size;
         return new PointF((ip.X - r.X) * img.Width / r.Width, (ip.Y - r.Y) * img.Height / r.Height);
     }
 
     private Point SnipToClient(PointF sp, int i)
     {
         Rectangle r = _layout!.ImageRects[i];
-        Size img = _project!.Snips[i].Image.Size;
+        Size img = _snips![i].Image.Size;
         Point o = Origin();
         float z = Zoom;
         return new Point((int)Math.Round(o.X + (r.X + sp.X * r.Width / img.Width) * z),
@@ -214,7 +265,7 @@ public sealed class EditorCanvas : ScrollableControl
     /// <summary>The snip under the point, or the nearest one (drawings may start in the gaps between snips).</summary>
     private int SnipAt(PointF ip)
     {
-        if (_layout == null || _project == null || _project.Snips.Count == 0) return -1;
+        if (_layout == null || _project == null || _snips == null || _snips.Count == 0) return -1;
         int best = -1;
         double bestDist = double.MaxValue;
         for (int i = 0; i < _layout.ImageRects.Length; i++)
@@ -230,10 +281,10 @@ public sealed class EditorCanvas : ScrollableControl
 
     private (int Snip, Annotation A)? HitAnnotation(PointF ip, Func<Annotation, bool>? filter = null)
     {
-        if (_project == null || _layout == null) return null;
-        for (int i = _project.Snips.Count - 1; i >= 0; i--)
+        if (_project == null || _layout == null || _snips == null) return null;
+        for (int i = _snips.Count - 1; i >= 0; i--)
         {
-            List<Annotation> list = _project.Snips[i].Annotations;
+            List<Annotation> list = _snips[i].Annotations;
             if (list.Count == 0) continue;
             PointF sp = ImageToSnip(ip, i);
             float tol = 5f / (Zoom * SnipScale(i));
@@ -264,7 +315,7 @@ public sealed class EditorCanvas : ScrollableControl
     {
         Graphics g = e.Graphics;
         g.Clear(BackColor);
-        if (_base == null || _project == null || _layout == null)
+        if (_base == null || _project == null || _layout == null || _snips == null)
         {
             TextRenderer.DrawText(g, EmptyText, Font, ClientRectangle, Color.Gainsboro,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
@@ -310,18 +361,19 @@ public sealed class EditorCanvas : ScrollableControl
         GraphicsState state = g.Save();
         g.TranslateTransform(o.X, o.Y);
         g.ScaleTransform(z, z);
-        _project.DrawAnnotations(g, _layout);
+        Project.DrawAnnotations(g, _layout, _snips!);
+        if (Watermark != null) WatermarkRenderer.Draw(g, _base.Size, Watermark);
         if (_draft != null && _draftSnip >= 0)
         {
             GraphicsState s2 = g.Save();
-            _project.ApplySnipTransform(g, _draftSnip, _layout);
+            Project.ApplySnipTransform(g, _layout, _draftSnip, _snips![_draftSnip].Image.Size);
             AnnotationRenderer.Draw(g, _draft);
             g.Restore(s2);
         }
-        if (_selected is { } sel && sel.Snip < _project.Snips.Count)
+        if (_selected is { } sel && sel.Snip < _snips.Count)
         {
             GraphicsState s3 = g.Save();
-            _project.ApplySnipTransform(g, sel.Snip, _layout);
+            Project.ApplySnipTransform(g, _layout, sel.Snip, _snips![sel.Snip].Image.Size);
             RectangleF b = AnnotationRenderer.Bounds(sel.A);
             float px = 1f / (z * SnipScale(sel.Snip)); // one screen pixel in snip units
             b.Inflate(4 * px, 4 * px);
@@ -329,7 +381,107 @@ public sealed class EditorCanvas : ScrollableControl
             g.DrawRectangle(pen, b.X, b.Y, b.Width, b.Height);
             g.Restore(s3);
         }
+        if (_area is { } area && area.Snip < _snips.Count)
+        {
+            GraphicsState s4 = g.Save();
+            Project.ApplySnipTransform(g, _layout, area.Snip, _snips[area.Snip].Image.Size);
+            float px = 1f / (z * SnipScale(area.Snip));
+            Rectangle r = area.Rect;
+            using (var shade = new SolidBrush(Color.FromArgb(40, 0, 120, 215))) g.FillRectangle(shade, r);
+            using (var white = new Pen(Color.White, 1.5f * px)) g.DrawRectangle(white, r.X, r.Y, r.Width, r.Height);
+            using (var dash = new Pen(Color.FromArgb(0, 120, 215), 1.5f * px) { DashStyle = DashStyle.Dash }) g.DrawRectangle(dash, r.X, r.Y, r.Width, r.Height);
+            g.Restore(s4);
+        }
         g.Restore(state);
+
+        if (_overlayEditing && _overlaySel > 0 && _overlaySel < _layout.ImageRects.Length)
+        {
+            Rectangle sr = ImageRectToClient(_layout.ImageRects[_overlaySel]);
+            using var pen = new Pen(Color.FromArgb(0, 120, 215), 2) { DashStyle = DashStyle.Dash };
+            g.DrawRectangle(pen, sr);
+            foreach (Rectangle h in HandleRects(sr))
+            {
+                g.FillRectangle(Brushes.White, h);
+                g.DrawRectangle(Pens.DodgerBlue, h);
+            }
+        }
+    }
+
+    private Rectangle ImageRectToClient(Rectangle r)
+    {
+        Point o = Origin();
+        float z = Zoom;
+        return Rectangle.FromLTRB((int)(o.X + r.Left * z), (int)(o.Y + r.Top * z), (int)(o.X + r.Right * z), (int)(o.Y + r.Bottom * z));
+    }
+
+    private int HandleSize => LogicalToDeviceUnits(10);
+
+    /// <summary>Corner handles: top-left, top-right, bottom-left, bottom-right.</summary>
+    private Rectangle[] HandleRects(Rectangle r)
+    {
+        int h = HandleSize, half = h / 2;
+        return new[]
+        {
+            new Rectangle(r.Left - half, r.Top - half, h, h), new Rectangle(r.Right - half, r.Top - half, h, h),
+            new Rectangle(r.Left - half, r.Bottom - half, h, h), new Rectangle(r.Right - half, r.Bottom - half, h, h),
+        };
+    }
+
+    /// <summary>Overlay snip (index ≥ 1) under the mouse, topmost first, and which part of it was hit.</summary>
+    private (int Index, OverlayDrag Part) HitOverlay(Point client)
+    {
+        if (!_overlayEditing || _layout == null || _snips == null) return (-1, OverlayDrag.None);
+        if (_overlaySel > 0 && _overlaySel < _layout.ImageRects.Length)
+        {
+            Rectangle[] hs = HandleRects(ImageRectToClient(_layout.ImageRects[_overlaySel]));
+            OverlayDrag[] parts = { OverlayDrag.TopLeft, OverlayDrag.TopRight, OverlayDrag.BottomLeft, OverlayDrag.BottomRight };
+            for (int k = 0; k < 4; k++)
+                if (Rectangle.Inflate(hs[k], 3, 3).Contains(client)) return (_overlaySel, parts[k]);
+        }
+        for (int i = _layout.ImageRects.Length - 1; i >= 1; i--)
+            if (ImageRectToClient(_layout.ImageRects[i]).Contains(client)) return (i, OverlayDrag.Move);
+        return (-1, OverlayDrag.None);
+    }
+
+    private RectangleF CurrentOverlayRect(int i)
+    {
+        Rectangle bg = _layout!.ImageRects[0], r = _layout.ImageRects[i];
+        return _snips![i].OverlayRect ?? new RectangleF(r.X - bg.X, r.Y - bg.Y, r.Width, r.Height);
+    }
+
+    private void DragOverlay(PointF ip)
+    {
+        if (_project == null || _snips == null || _overlaySel < 1) return;
+        float dx = ip.X - _overlayStartMouse.X, dy = ip.Y - _overlayStartMouse.Y;
+        if (!_overlayCheckpointed)
+        {
+            if (Math.Abs(dx) + Math.Abs(dy) < 1) return;
+            _project.Checkpoint();
+            _overlayCheckpointed = true;
+        }
+        RectangleF r = _overlayStartRect;
+        if (_overlayDrag == OverlayDrag.Move)
+        {
+            r.Offset(dx, dy);
+        }
+        else
+        {
+            // Corner drag; keeps the proportions unless Shift is held.
+            float left = r.Left, top = r.Top, right = r.Right, bottom = r.Bottom;
+            if (_overlayDrag is OverlayDrag.TopLeft or OverlayDrag.BottomLeft) left += dx; else right += dx;
+            if (_overlayDrag is OverlayDrag.TopLeft or OverlayDrag.TopRight) top += dy; else bottom += dy;
+            float w = Math.Max(8, right - left), h = Math.Max(8, bottom - top);
+            if ((ModifierKeys & Keys.Shift) == 0)
+            {
+                float aspect = _overlayStartRect.Width / _overlayStartRect.Height;
+                if (w / h > aspect) h = w / aspect; else w = h * aspect;
+            }
+            float x = _overlayDrag is OverlayDrag.TopLeft or OverlayDrag.BottomLeft ? r.Right - w : r.Left;
+            float y = _overlayDrag is OverlayDrag.TopLeft or OverlayDrag.TopRight ? r.Bottom - h : r.Top;
+            r = new RectangleF(x, y, w, h);
+        }
+        _snips[_overlaySel].OverlayRect = r;
+        OverlayChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private static void DrawChecker(Graphics g, Rectangle r)
@@ -359,7 +511,7 @@ public sealed class EditorCanvas : ScrollableControl
             Cursor = Cursors.SizeAll;
             return;
         }
-        if (e.Button != MouseButtons.Left || _project == null || _layout == null || _project.Snips.Count == 0) return;
+        if (e.Button != MouseButtons.Left || _project == null || _layout == null || _snips == null || _snips.Count == 0) return;
         CommitText();
 
         PointF ip = ClientToImage(e.Location);
@@ -368,7 +520,9 @@ public sealed class EditorCanvas : ScrollableControl
         {
             case DrawTool.Select:
             {
-                var hit = HitAnnotation(ip);
+                // Handles of the selected overlay snip win over drawings under them.
+                var overlayHit = HitOverlay(e.Location);
+                var hit = overlayHit.Part is OverlayDrag.Move or OverlayDrag.None ? HitAnnotation(ip) : null;
                 Select(hit);
                 if (hit is { } h)
                 {
@@ -381,10 +535,30 @@ public sealed class EditorCanvas : ScrollableControl
                     _moveCheckpointed = false;
                     _moveLast = ImageToSnip(ip, h.Snip);
                 }
-                else if (snip >= 0)
+                else if (overlayHit.Index > 0)
                 {
-                    SnipClicked?.Invoke(this, snip);
+                    _overlaySel = overlayHit.Index;
+                    _overlayDrag = overlayHit.Part;
+                    _overlayCheckpointed = false;
+                    _overlayStartMouse = ip;
+                    _overlayStartRect = CurrentOverlayRect(overlayHit.Index);
+                    SnipClicked?.Invoke(this, overlayHit.Index);
+                    Invalidate();
                 }
+                else
+                {
+                    _overlaySel = -1;
+                    if (snip >= 0) SnipClicked?.Invoke(this, snip);
+                    Invalidate();
+                }
+                break;
+            }
+            case DrawTool.Area:
+            {
+                _areaDragging = true;
+                _areaStart = ClampToSnip(ImageToSnip(ip, snip), snip);
+                _area = (snip, new Rectangle(Point.Round(_areaStart), Size.Empty));
+                Invalidate();
                 break;
             }
             case DrawTool.Eraser:
@@ -462,7 +636,7 @@ public sealed class EditorCanvas : ScrollableControl
                     Points = { ImageToSnip(ip, snip) },
                 };
                 _project.NextBadgeNumber++;
-                _project.Snips[snip].Annotations.Add(badge);
+                _snips[snip].Annotations.Add(badge);
                 RaiseChanged(snip);
                 break;
             }
@@ -478,10 +652,22 @@ public sealed class EditorCanvas : ScrollableControl
             Invalidate();
             return;
         }
-        if (_project == null || _layout == null) return;
+        if (_project == null || _layout == null || _snips == null) return;
         PointF ip = ClientToImage(e.Location);
 
-        if (_draft != null)
+        if (_overlayDrag != OverlayDrag.None)
+        {
+            DragOverlay(ip);
+        }
+        else if (_areaDragging && _area is { } a)
+        {
+            PointF p2 = ClampToSnip(ImageToSnip(ip, a.Snip), a.Snip);
+            _area = (a.Snip, Rectangle.FromLTRB(
+                (int)Math.Floor(Math.Min(_areaStart.X, p2.X)), (int)Math.Floor(Math.Min(_areaStart.Y, p2.Y)),
+                (int)Math.Ceiling(Math.Max(_areaStart.X, p2.X)), (int)Math.Ceiling(Math.Max(_areaStart.Y, p2.Y))));
+            Invalidate();
+        }
+        else if (_draft != null)
         {
             PointF sp = ImageToSnip(ip, _draftSnip);
             if (_draft.Kind is AnnotationKind.Pen or AnnotationKind.Marker)
@@ -516,7 +702,14 @@ public sealed class EditorCanvas : ScrollableControl
         }
         else if (_tool == DrawTool.Select && e.Button == MouseButtons.None)
         {
-            Cursor = HitAnnotation(ip) != null ? Cursors.SizeAll : Cursors.Default;
+            var oh = HitOverlay(e.Location);
+            Cursor = oh.Part switch
+            {
+                OverlayDrag.TopLeft or OverlayDrag.BottomRight => Cursors.SizeNWSE,
+                OverlayDrag.TopRight or OverlayDrag.BottomLeft => Cursors.SizeNESW,
+                _ when HitAnnotation(ip) != null || oh.Index > 0 => Cursors.SizeAll,
+                _ => Cursors.Default,
+            };
         }
     }
 
@@ -531,6 +724,18 @@ public sealed class EditorCanvas : ScrollableControl
         }
         if (_project == null) return;
 
+        if (_overlayDrag != OverlayDrag.None)
+        {
+            _overlayDrag = OverlayDrag.None;
+            if (_overlayCheckpointed) DocumentChanged?.Invoke(this, EventArgs.Empty);
+        }
+        if (_areaDragging)
+        {
+            _areaDragging = false;
+            if (_area is { } a && (a.Rect.Width < 2 || a.Rect.Height < 2)) _area = null;
+            AreaChanged?.Invoke(this, EventArgs.Empty);
+            Invalidate();
+        }
         if (_draft != null)
         {
             Annotation d = _draft;
@@ -540,7 +745,7 @@ public sealed class EditorCanvas : ScrollableControl
             if (keep)
             {
                 _project.Checkpoint();
-                _project.Snips[snip].Annotations.Add(d);
+                _snips![snip].Annotations.Add(d);
                 RaiseChanged(snip);
             }
             Invalidate();
@@ -589,10 +794,16 @@ public sealed class EditorCanvas : ScrollableControl
             _project.Checkpoint();
             _eraseCheckpointed = true;
         }
-        _project.Snips[h.Snip].Annotations.Remove(h.A);
+        _snips![h.Snip].Annotations.Remove(h.A);
         if (_selected?.A == h.A) Select(null);
-        _project.Snips[h.Snip].InvalidateThumbnail();
+        _snips[h.Snip].InvalidateThumbnail();
         Invalidate();
+    }
+
+    private PointF ClampToSnip(PointF sp, int i)
+    {
+        Size s = _snips![i].Image.Size;
+        return new PointF(Math.Clamp(sp.X, 0, s.Width), Math.Clamp(sp.Y, 0, s.Height));
     }
 
     /// <summary>Shift while drawing: square/circle, or lines at 45° steps.</summary>
@@ -687,14 +898,14 @@ public sealed class EditorCanvas : ScrollableControl
             {
                 _project.Checkpoint();
                 ed.A.Text = text;
-                _project.Snips[ed.Snip].Annotations.Add(ed.A);
+                _snips![ed.Snip].Annotations.Add(ed.A);
                 RaiseChanged(ed.Snip);
             }
         }
         else if (text != ed.A.Text)
         {
             _project.Checkpoint();
-            if (text.Length == 0) _project.Snips[ed.Snip].Annotations.Remove(ed.A);
+            if (text.Length == 0) _snips![ed.Snip].Annotations.Remove(ed.A);
             else ed.A.Text = text;
             RaiseChanged(ed.Snip);
         }
@@ -724,8 +935,8 @@ public sealed class EditorCanvas : ScrollableControl
     {
         if (_project != null)
         {
-            if (snip >= 0 && snip < _project.Snips.Count) _project.Snips[snip].InvalidateThumbnail();
-            else foreach (SnipItem s in _project.Snips) s.InvalidateThumbnail();
+            if (_snips != null && snip >= 0 && snip < _snips.Count) _snips[snip].InvalidateThumbnail();
+            else if (_snips != null) foreach (SnipItem s in _snips) s.InvalidateThumbnail();
         }
         Invalidate();
         DocumentChanged?.Invoke(this, EventArgs.Empty);

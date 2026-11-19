@@ -4,7 +4,7 @@
 combines them into one image (vertically, horizontally or as a grid), so you no longer have to paste
 screenshots into Paint and line them up by hand.
 
-Current version: **1.3.0** (see [CHANGELOG.md](CHANGELOG.md)).
+Current version: **1.4.0** (see [CHANGELOG.md](CHANGELOG.md)).
 
 ## How to use
 
@@ -36,13 +36,29 @@ Current version: **1.3.0** (see [CHANGELOG.md](CHANGELOG.md)).
    close. Each tab has its own snips, options, undo history and save location. Right-click snips to move them to
    another tab. Open tabs (saved or not) come back automatically the next time you start Multi Snip.
 
+7. **Crop / erase.** Pick **⬚ Area** (S), drag a rectangle on a snip, then **✂ Crop** (Enter) or **🧽 Erase Area**
+   (Delete). Click a snip in the list to work on it alone; **All snips (combined)** at the top of the list goes back.
+8. **Mix layouts.** **⧉ Keep as one** (Ctrl+G) freezes the current arrangement (or the selected snips) into one
+   picture; switch layout and add more — e.g. two snips stacked vertically, then a third beside them. **Ungroup**
+   brings the snips back. **Overlay** puts snips on top of the first one; drag and resize them with the corner
+   handles. **Divider line** separates snips with a colored line.
+9. **More output.** **Save Each Snip Separately** (Ctrl+Shift+E) writes Name-01.png, Name-02.png…;
+   **Image → Watermark…** adds text or a logo (also **Tools → Watermark All Images in a Folder…**);
+   **Tools → Image Metadata** shows and removes EXIF/GPS/author data from any JPEG/PNG.
+10. **Readability.** **View → Text Size** (Normal / Large / Extra large) makes all menus, buttons and tabs bigger.
+
+**How the editable PNG works:** a PNG file is a list of "chunks" (picture data, colour info, text…). Viewers skip
+chunks they don't know. Multi Snip adds one private chunk with a small zip inside — the original snips, their
+drawings, groups and options — so the file is a normal picture everywhere, and Multi Snip finds its chunk when
+you open it again. (Tools → Image Metadata → Remove ALL turns it into a plain PNG.)
+
 **File → Open Recent** and **File → Recent Folders** keep a history of the last saved files and folders; the recent
 folders also appear in the left pane of the Save / Open dialogs.
 
 | Shortcut | Action |
 |---|---|
 | Ctrl+Shift+S | Snip from anywhere (global hotkey, works while minimized; change it with **⌨ Hotkey…**) |
-| Ctrl+N / Ctrl+Shift+N / Ctrl+Shift+R | New snip / full-screen snip / scrolling capture |
+| Ctrl+N / Ctrl+Shift+N / Ctrl+Shift+R | New snip / full-screen snip / whole page |
 | Enter / Esc (in overlay) | Snip whole screen / cancel (or finish "Keep snipping") |
 | Ctrl+T, Ctrl+W, Ctrl+Tab | New tab, close tab, next tab |
 | Ctrl+O, Ctrl+S, F12, Ctrl+E | Open, save, save as, export plain image |
@@ -50,7 +66,10 @@ folders also appear in the left pane of the Save / Open dialogs.
 | Ctrl+Z, Ctrl+Y | Undo, redo |
 | Delete | Remove the selected drawing (or the selected snips) |
 | Ctrl+Up / Ctrl+Down | Reorder snips |
-| V P M E L A R O T C Q | Tools: Select, Pen, Marker, Eraser, Line, Arrow, Rectangle, Ellipse, Text, round label, square label |
+| V S P M E L A R O T C Q | Tools: Select, Area, Pen, Marker, Eraser, Line, Arrow, Rectangle, Ellipse, Text, round label, square label |
+| Enter / Delete (Area tool) | Crop to the area / erase the area |
+| Ctrl+G, Ctrl+Shift+G | Keep as one (group), ungroup |
+| Ctrl+Shift+E | Save each snip separately |
 | Shift while drawing | Straight lines at 45° steps, squares, circles |
 | Ctrl + wheel, Ctrl+0, Ctrl+1 | Zoom, fit, 100 % |
 
@@ -82,9 +101,9 @@ Build on Windows (or in the GitHub Action). The SDK only writes the file-propert
 | Field | Value |
 |---|---|
 | File description | Multi Snip tool for better productivity |
-| File version | 1.3.0.0 |
+| File version | 1.4.0.0 |
 | Product name | Multi Snip application by WebProgress.AI |
-| Product version | 1.3.0 |
+| Product version | 1.4.0 |
 | Copyright | Copyright © 2026 WebProgress.AI (idea and IP initiator). All rights reserved. |
 | Company | WebProgress.AI |
 

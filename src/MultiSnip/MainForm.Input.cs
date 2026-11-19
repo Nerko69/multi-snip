@@ -80,17 +80,10 @@ public sealed partial class MainForm
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        FitTabStrip();
         UpdateHotkeyTexts();
         if (!_hotkeyRegistered && _settings.SnipHotkey != Keys.None)
             SetStatus($"Note: {HotkeyText} is used by another app, so the global hotkey is unavailable. Click ⌨ Hotkey… to pick another.");
         _canvas.Focus();
-    }
-
-    protected override void OnDpiChanged(DpiChangedEventArgs e)
-    {
-        base.OnDpiChanged(e);
-        BeginInvoke(FitTabStrip); // after the controls have been rescaled
     }
 
     protected override void OnHandleDestroyed(EventArgs e)
@@ -118,7 +111,7 @@ public sealed partial class MainForm
 
     private static readonly Dictionary<Keys, DrawTool> ToolKeys = new()
     {
-        [Keys.V] = DrawTool.Select, [Keys.P] = DrawTool.Pen, [Keys.M] = DrawTool.Marker, [Keys.E] = DrawTool.Eraser,
+        [Keys.V] = DrawTool.Select, [Keys.S] = DrawTool.Area, [Keys.P] = DrawTool.Pen, [Keys.M] = DrawTool.Marker, [Keys.E] = DrawTool.Eraser,
         [Keys.L] = DrawTool.Line, [Keys.A] = DrawTool.Arrow, [Keys.R] = DrawTool.Rectangle, [Keys.O] = DrawTool.Ellipse,
         [Keys.T] = DrawTool.Text, [Keys.C] = DrawTool.BadgeCircle, [Keys.Q] = DrawTool.BadgeSquare,
     };
@@ -142,6 +135,10 @@ public sealed partial class MainForm
             case Keys.Control | Keys.S: Save(); return true;
             case Keys.F12: SaveAs(); return true;
             case Keys.Control | Keys.E: ExportImage(); return true;
+            case Keys.Control | Keys.Shift | Keys.E: ExportEachSnip(); return true;
+            case Keys.Control | Keys.G when !editingText: GroupSnips(); return true;
+            case Keys.Control | Keys.Shift | Keys.G when !editingText: UngroupSnips(); return true;
+            case Keys.Enter when onWorkArea && _canvas.AreaSelection != null: CropToArea(); return true;
             case Keys.Control | Keys.Z when !editingText: Undo(); return true;
             case Keys.Control | Keys.Y when !editingText: Redo(); return true;
             case Keys.Control | Keys.Shift | Keys.Z when !editingText: Redo(); return true;
@@ -154,6 +151,7 @@ public sealed partial class MainForm
             case Keys.Control | Keys.OemMinus or Keys.Control | Keys.Subtract: _canvas.ZoomBy(0.8f); return true;
             case Keys.Control | Keys.D0 or Keys.Control | Keys.NumPad0: _canvas.SetZoom(null); return true;
             case Keys.Control | Keys.D1 or Keys.Control | Keys.NumPad1: _canvas.SetZoom(1f); return true;
+            case Keys.Escape when focused == _canvas && _canvas.AreaSelection != null: _canvas.ClearArea(); return true;
             case Keys.Escape when focused == _canvas && _canvas.Tool != DrawTool.Select: SetTool(DrawTool.Select); return true;
         }
         // Single-letter tool shortcuts, only while the canvas or the snip list has the focus.

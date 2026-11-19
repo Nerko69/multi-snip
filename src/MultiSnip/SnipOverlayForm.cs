@@ -5,8 +5,8 @@ namespace MultiSnip;
 
 /// <summary>
 /// Full-screen overlay (spanning all monitors) showing a frozen screenshot.
-/// The user drags a rectangle to snip it. Esc / right-click cancels,
-/// Enter or double-click snips the whole screen under the cursor.
+/// The user drags a rectangle to snip it, or clicks the highlighted window / window part (e.g. a browser's page).
+/// Esc / right-click cancels, Enter or double-click snips the whole screen under the cursor.
 /// </summary>
 public sealed class SnipOverlayForm : Form
 {
@@ -17,15 +17,18 @@ public sealed class SnipOverlayForm : Form
     private bool _dragging;
     private List<Rectangle> _lastDirty = new();
     private readonly Bitmap _dimmed;
-    private readonly Font _labelFont = new("Segoe UI", 10f, FontStyle.Regular, GraphicsUnit.Point);
+    private readonly Font _labelFont = new("Segoe UI", 11f, FontStyle.Regular, GraphicsUnit.Point);
+    private readonly WindowFinder? _windows;
+    private Rectangle _hover; // window part under the mouse (overlay coordinates)
 
     public Bitmap? Result { get; private set; }
 
     /// <summary>The selected rectangle in screen coordinates (valid when <see cref="Result"/> is set).</summary>
     public Rectangle SelectedScreenArea { get; private set; }
 
-    public SnipOverlayForm(Bitmap screen, Rectangle virtualScreen, string hint)
+    public SnipOverlayForm(Bitmap screen, Rectangle virtualScreen, string hint, WindowFinder? windows = null)
     {
+        _windows = windows;
         _screen = screen;
         _virtual = virtualScreen;
         Hint = hint;
@@ -112,6 +115,17 @@ public sealed class SnipOverlayForm : Form
     {
         if (_current == e.Location) return;
         _current = e.Location;
+        if (!_dragging && _windows != null)
+        {
+            Rectangle hover = _windows.At(new Point(e.X + _virtual.X, e.Y + _virtual.Y));
+            if (!hover.IsEmpty) hover.Offset(-_virtual.X, -_virtual.Y);
+            if (hover != _hover)
+            {
+                _hover = hover;
+                Invalidate(); // the highlighted area moved: repaint everything
+                return;
+            }
+        }
         InvalidateDirty();
     }
 
@@ -147,6 +161,13 @@ public sealed class SnipOverlayForm : Form
         Rectangle sel = Rectangle.Intersect(Selection, new Rectangle(Point.Empty, _screen.Size));
         if (sel.Width < 3 || sel.Height < 3)
         {
+            // A click (no drag): take the highlighted window part, if any.
+            Rectangle pick = Rectangle.Intersect(_hover, new Rectangle(Point.Empty, _screen.Size));
+            if (pick.Width >= 3 && pick.Height >= 3)
+            {
+                Finish(pick);
+                return;
+            }
             Invalidate();
             return; // treat as an accidental click
         }
@@ -204,6 +225,12 @@ public sealed class SnipOverlayForm : Form
         }
         else
         {
+            if (!_hover.IsEmpty)
+            {
+                g.DrawImage(_screen, _hover, _hover, GraphicsUnit.Pixel);
+                using var hp = new Pen(Color.FromArgb(255, 170, 0), 3);
+                g.DrawRectangle(hp, _hover.X + 1, _hover.Y + 1, _hover.Width - 3, _hover.Height - 3);
+            }
             using var pen = new Pen(Color.FromArgb(160, 255, 255, 255), 1) { DashStyle = DashStyle.Dash };
             g.DrawLine(pen, 0, _current.Y, Width, _current.Y);
             g.DrawLine(pen, _current.X, 0, _current.X, Height);

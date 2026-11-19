@@ -13,6 +13,7 @@ internal static class Hotkey
         Keys.Control | Keys.T, Keys.Control | Keys.W, Keys.Control | Keys.Tab, Keys.Control | Keys.Shift | Keys.Tab,
         Keys.Control | Keys.Z, Keys.Control | Keys.Y, Keys.Control | Keys.Shift | Keys.Z, Keys.Control | Keys.E, Keys.F12,
         Keys.Control | Keys.D0, Keys.Control | Keys.D1, Keys.Control | Keys.Oemplus, Keys.Control | Keys.OemMinus,
+        Keys.Control | Keys.G, Keys.Control | Keys.Shift | Keys.G, Keys.Control | Keys.Shift | Keys.E,
     };
 
     public static string Format(Keys keys)

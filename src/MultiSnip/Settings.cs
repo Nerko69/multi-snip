@@ -16,10 +16,18 @@ public sealed class Settings
     public int BorderArgb { get; set; } = Color.FromArgb(200, 200, 200).ToArgb();
     public int BorderWidth { get; set; } = 1;
     public bool MatchSize { get; set; }
+    public bool Divider { get; set; }
+    public int DividerArgb { get; set; } = Color.FromArgb(0, 120, 215).ToArgb();
+    public int DividerWidth { get; set; } = 2;
     public int OutputScale { get; set; } = 100;
     public int DelaySeconds { get; set; }
     public bool KeepSnipping { get; set; }
     public bool ScrollToTopFirst { get; set; } = true;
+
+    /// <summary>0 = normal, 1 = large (default), 2 = extra large.</summary>
+    public int TextSize { get; set; } = 1;
+
+    public WatermarkOptions Watermark { get; set; } = new();
 
     // Drawing tools
     public int ToolArgb { get; set; } = Color.FromArgb(232, 17, 35).ToArgb();
@@ -64,6 +72,10 @@ public sealed class Settings
         BorderWidth = o.BorderWidth;
         MatchSize = o.MatchSize;
         OutputScale = o.OutputScale;
+        Divider = o.Divider;
+        DividerArgb = o.DividerColor.ToArgb();
+        DividerWidth = o.DividerWidth;
+        Watermark = o.Watermark.Clone();
     }
 
     public CombineOptions ToCombineOptions() => new()
@@ -80,6 +92,10 @@ public sealed class Settings
         BorderWidth = BorderWidth,
         MatchSize = MatchSize,
         OutputScale = OutputScale is > 0 and <= 100 ? OutputScale : 100,
+        Divider = Divider,
+        DividerColor = Color.FromArgb(DividerArgb),
+        DividerWidth = DividerWidth,
+        Watermark = Watermark.Clone(),
     };
 
     public static Settings Load()
@@ -87,7 +103,7 @@ public sealed class Settings
         try
         {
             if (File.Exists(FilePath))
-                return JsonSerializer.Deserialize<Settings>(File.ReadAllText(FilePath)) ?? new Settings();
+                return JsonSerializer.Deserialize<Settings>(File.ReadAllText(FilePath), ProjectArchive.Json) ?? new Settings();
         }
         catch
         {
@@ -101,7 +117,7 @@ public sealed class Settings
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, ProjectArchive.Json));
         }
         catch
         {

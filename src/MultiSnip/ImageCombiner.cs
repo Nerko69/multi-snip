@@ -35,6 +35,11 @@ public static class ImageCombiner
             attrs.SetWrapMode(WrapMode.TileFlipXY); // avoids faint edge artifacts when scaling
             g.DrawImage(images[i], dest, 0, 0, images[i].Width, images[i].Height, GraphicsUnit.Pixel, attrs);
         }
+        if (layout.Dividers.Length > 0)
+        {
+            using var divider = new SolidBrush(o.DividerColor);
+            foreach (Rectangle d in layout.Dividers) g.FillRectangle(divider, d);
+        }
         return result;
     }
 }

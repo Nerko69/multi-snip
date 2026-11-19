@@ -16,24 +16,37 @@ public static class ProjectFile
             FilePath = p.FilePath,
             Dirty = p.Dirty,
         };
-        foreach (SnipItem s in p.Snips)
-        {
-            using var ms = new MemoryStream();
-            s.Image.Save(ms, ImageFormat.Png);
-            doc.Snips.Add(new SnipRecord { Source = s.Source, Png = ms.ToArray(), Annotations = s.Annotations.Select(a => a.Clone()).ToList() });
-        }
+        doc.Snips.AddRange(p.Snips.Select(ToRecord));
         return doc;
+    }
+
+    private static SnipRecord ToRecord(SnipItem s)
+    {
+        using var ms = new MemoryStream();
+        s.Image.Save(ms, ImageFormat.Png);
+        return new SnipRecord
+        {
+            Source = s.Source,
+            Png = ms.ToArray(),
+            Annotations = s.Annotations.Select(a => a.Clone()).ToList(),
+            Children = s.Children?.Select(ToRecord).ToList(),
+            GroupOptions = s.GroupOptions?.Clone(),
+            OverlayBox = s.OverlayRect is { } r ? new[] { r.X, r.Y, r.Width, r.Height } : null,
+        };
+    }
+
+    private static SnipItem FromRecord(SnipRecord r)
+    {
+        using var ms = new MemoryStream(r.Png);
+        using var img = Image.FromStream(ms);
+        RectangleF? overlay = r.OverlayBox is { Length: 4 } b ? new RectangleF(b[0], b[1], b[2], b[3]) : null;
+        return new SnipItem(ImageUtil.ToArgb(img), r.Source, r.Annotations, r.Children?.Select(FromRecord).ToList(), r.GroupOptions, overlay);
     }
 
     public static Project FromDocument(ProjectDocument doc)
     {
         var p = new Project(doc.Options) { NextBadgeNumber = Math.Max(1, doc.NextBadgeNumber) };
-        foreach (SnipRecord r in doc.Snips)
-        {
-            using var ms = new MemoryStream(r.Png);
-            using var img = Image.FromStream(ms);
-            p.Snips.Add(new SnipItem(ImageUtil.ToArgb(img), r.Source, r.Annotations));
-        }
+        p.Snips.AddRange(doc.Snips.Select(FromRecord));
         return p;
     }
 
@@ -80,12 +93,44 @@ public static class ImageUtil
         return bmp;
     }
 
+    /// <summary>Saves as PNG / JPG (quality 92) / BMP / GIF / TIFF depending on the file extension.</summary>
+    public static void SaveByExtension(Bitmap image, string path, Color flattenColor)
+    {
+        switch (Path.GetExtension(path).ToLowerInvariant())
+        {
+            case ".jpg" or ".jpeg":
+            {
+                using Bitmap flat = Flatten(image, flattenColor);
+                ImageCodecInfo codec = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
+                using var p = new EncoderParameters(1);
+                p.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 92L);
+                flat.Save(path, codec, p);
+                break;
+            }
+            case ".bmp":
+            {
+                using Bitmap flat = Flatten(image, flattenColor);
+                flat.Save(path, ImageFormat.Bmp);
+                break;
+            }
+            case ".gif":
+                image.Save(path, ImageFormat.Gif);
+                break;
+            case ".tif" or ".tiff":
+                image.Save(path, ImageFormat.Tiff);
+                break;
+            default:
+                image.Save(path, ImageFormat.Png);
+                break;
+        }
+    }
+
     public static Bitmap Flatten(Bitmap image, Color background)
     {
         var flat = new Bitmap(image.Width, image.Height, PixelFormat.Format24bppRgb);
         using var g = Graphics.FromImage(flat);
         g.Clear(background);
-        g.DrawImageUnscaled(image, 0, 0);
+        g.DrawImage(image, 0, 0, image.Width, image.Height);
         return flat;
     }
 }

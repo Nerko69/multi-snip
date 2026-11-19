@@ -15,5 +15,7 @@
     <Compile Include="../../src/MultiSnip/FileNames.cs" Link="Src/FileNames.cs" />
     <Compile Include="../../src/MultiSnip/EditablePng.cs" Link="Src/EditablePng.cs" />
     <Compile Include="../../src/MultiSnip/ProjectArchive.cs" Link="Src/ProjectArchive.cs" />
+    <Compile Include="../../src/MultiSnip/Watermark.cs" Link="Src/Watermark.cs" />
+    <Compile Include="../../src/MultiSnip/MetadataTools.cs" Link="Src/MetadataTools.cs" />
   </ItemGroup>
 </Project>

@@ -12,6 +12,103 @@ internal static class CoreTests
         LayoutTests();
         EditablePngTests();
         ArchiveTests();
+        OverlayAndDividerTests();
+        WatermarkTests();
+        MetadataTests();
+        GroupArchiveTests();
+    }
+
+    private static void OverlayAndDividerTests()
+    {
+        var sizes = new[] { new Size(400, 300), new Size(200, 100), new Size(100, 100) };
+        var o = new CombineOptions { Layout = CombineLayout.Overlay, Margin = 10 };
+        var l = CombinedLayout.Compute(sizes, o, new RectangleF?[] { null, new RectangleF(50, 60, 100, 50), null });
+        T.Check("overlay: canvas = background + margin", l.Total == new Size(420, 320), l.Total.ToString());
+        T.Check("overlay: background at margin", l.ImageRects[0] == new Rectangle(10, 10, 400, 300));
+        T.Check("overlay: placed snip uses its box", l.ImageRects[1] == new Rectangle(60, 70, 100, 50), l.ImageRects[1].ToString());
+        RectangleF d = CombinedLayout.DefaultOverlayRect(new Size(400, 300), new Size(1000, 100), 1);
+        T.Check("overlay: default place shrinks big snips and keeps them inside", d.Width <= 240.5f && d.X >= 0 && d.Right <= 400.5f, d.ToString());
+
+        var v = new CombineOptions { Layout = CombineLayout.Vertical, Spacing = 0, Divider = true, DividerWidth = 4 };
+        var lv = CombinedLayout.Compute(new[] { new Size(100, 50), new Size(100, 50), new Size(100, 50) }, v);
+        T.Check("divider: gap widened to the line width", lv.Total == new Size(100, 158), lv.Total.ToString());
+        T.Check("divider: one line between each pair", lv.Dividers.Length == 2 && lv.Dividers[0] == new Rectangle(0, 50, 100, 4), lv.Dividers.FirstOrDefault().ToString());
+        var g = new CombineOptions { Layout = CombineLayout.Grid, GridColumns = 2, Spacing = 10, Divider = true, DividerWidth = 2 };
+        var lg = CombinedLayout.Compute(Enumerable.Repeat(new Size(50, 50), 4).ToArray(), g);
+        T.Check("divider: grid has a column and a row line", lg.Dividers.Length == 2 && lg.Dividers[0] == new Rectangle(54, 0, 2, 110) && lg.Dividers[1] == new Rectangle(0, 54, 110, 2),
+            string.Join(" ", lg.Dividers));
+        T.Check("divider off: no lines", CombinedLayout.Compute(Enumerable.Repeat(new Size(50, 50), 4).ToArray(), new CombineOptions()).Dividers.Length == 0);
+    }
+
+    private static void WatermarkTests()
+    {
+        SizeF s = WatermarkOptions.TargetSize(new Size(1000, 500), new SizeF(200, 50), 25);
+        T.Check("watermark size = % of image width", Math.Abs(s.Width - 250) < 0.01 && Math.Abs(s.Height - 62.5) < 0.01, s.ToString());
+        var br = WatermarkOptions.Place(new Size(1000, 500), new SizeF(250, 60), WatermarkPosition.BottomRight)[0];
+        T.Check("watermark bottom-right stays inside", br.Right <= 1000 && br.Bottom <= 500 && br.X > 700 && br.Y > 400, br.ToString());
+        var c = WatermarkOptions.Place(new Size(1000, 500), new SizeF(200, 50), WatermarkPosition.Center)[0];
+        T.Check("watermark centred", c == new RectangleF(400, 225, 200, 50), c.ToString());
+        T.Check("watermark tiled covers the image", WatermarkOptions.Place(new Size(1000, 500), new SizeF(200, 50), WatermarkPosition.Tiled).Count > 8);
+        var o = new CombineOptions { Watermark = new WatermarkOptions { Enabled = true, Text = "Hi", ImagePng = new byte[] { 1, 2 } } };
+        var clone = o.Clone();
+        clone.Watermark.Text = "changed";
+        T.Check("watermark settings are copied, not shared", o.Watermark.Text == "Hi" && clone.Watermark.ImagePng!.SequenceEqual(new byte[] { 1, 2 }));
+    }
+
+    private static void MetadataTests()
+    {
+        // Minimal JPEG structure: SOI, APP0 (JFIF), APP1 (EXIF), COM, DQT, SOS + data, EOI.
+        byte[] Seg(byte marker, string payload)
+        {
+            byte[] p = Encoding.ASCII.GetBytes(payload);
+            var seg = new byte[4 + p.Length];
+            seg[0] = 0xFF; seg[1] = marker;
+            BinaryPrimitives.WriteUInt16BigEndian(seg.AsSpan(2), (ushort)(p.Length + 2));
+            p.CopyTo(seg, 4);
+            return seg;
+        }
+        byte[] jpeg = new byte[] { 0xFF, 0xD8 }
+            .Concat(Seg(0xE0, "JFIF\0rest")).Concat(Seg(0xE1, "Exif\0\0GPS secret")).Concat(Seg(0xFE, "a comment"))
+            .Concat(Seg(0xDB, "quant")).Concat(Seg(0xDA, "scan")).Concat(new byte[] { 1, 2, 3, 0xFF, 0xD9 }).ToArray();
+        var blocks = MetadataTools.ListBlocks(jpeg);
+        T.Check("jpeg: finds EXIF and comment", blocks.Count == 2 && blocks[0].Name.StartsWith("EXIF"), string.Join("; ", blocks.Select(b => b.Name)));
+        byte[] clean = MetadataTools.StripAll(jpeg, out int removed)!;
+        T.Check("jpeg: metadata removed losslessly", removed == 2 && MetadataTools.ListBlocks(clean).Count == 0 &&
+            clean.Length == jpeg.Length - Seg(0xE1, "Exif\0\0GPS secret").Length - Seg(0xFE, "a comment").Length &&
+            clean.AsSpan(clean.Length - 5).SequenceEqual(new byte[] { 1, 2, 3, 0xFF, 0xD9 }) &&
+            Encoding.ASCII.GetString(clean).Contains("JFIF") && !Encoding.ASCII.GetString(clean).Contains("GPS"));
+
+        byte[] png = EditablePng.Embed(TinyPng(), new byte[] { 9, 9, 9 });
+        T.Check("png: project data listed as metadata", MetadataTools.ListBlocks(png).Any(b => b.Name.StartsWith("Multi Snip")));
+        byte[] cleanPng = MetadataTools.StripAll(png, out int r2)!;
+        T.Check("png: stripped back to the plain image", r2 == 1 && cleanPng.SequenceEqual(TinyPng()));
+        T.Check("other formats are not touched", MetadataTools.StripAll(new byte[] { 1, 2, 3 }, out _) == null);
+    }
+
+    private static void GroupArchiveTests()
+    {
+        var doc = new ProjectDocument
+        {
+            Snips =
+            {
+                new SnipRecord
+                {
+                    Png = new byte[] { 1 },
+                    GroupOptions = new CombineOptions { Layout = CombineLayout.Vertical },
+                    OverlayBox = new[] { 1f, 2f, 30f, 40f },
+                },
+            },
+        };
+        doc.Snips[0].Children = new List<SnipRecord>
+        {
+            new() { Png = new byte[] { 2 }, Annotations = { new Annotation { Kind = AnnotationKind.Text, Text = "inner" } } },
+            new() { Png = new byte[] { 3 } },
+        };
+        var back = ProjectArchive.Read(ProjectArchive.Write(doc));
+        SnipRecord g = back.Snips[0];
+        T.Check("group: children and their images survive", g.Children!.Count == 2 && g.Children[0].Png.SequenceEqual(new byte[] { 2 }) &&
+                                                           g.Children[1].Png.SequenceEqual(new byte[] { 3 }) && g.Children[0].Annotations[0].Text == "inner");
+        T.Check("group: options and overlay box survive", g.GroupOptions!.Layout == CombineLayout.Vertical && g.OverlayBox!.SequenceEqual(new[] { 1f, 2f, 30f, 40f }));
     }
 
     private static void FileNameTests()

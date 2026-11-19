@@ -11,6 +11,13 @@ public sealed class SnipRecord
     public string Source { get; set; } = "";
     public List<Annotation> Annotations { get; set; } = new();
 
+    /// <summary>"Keep as one" group: the snips it was made from (restored by Ungroup), and the options used.</summary>
+    public List<SnipRecord>? Children { get; set; }
+    public CombineOptions? GroupOptions { get; set; }
+
+    /// <summary>Overlay mode: x, y, width, height relative to the background snip.</summary>
+    public float[]? OverlayBox { get; set; }
+
     /// <summary>The original snip as PNG bytes (stored as a separate entry in the archive).</summary>
     [JsonIgnore]
     public byte[] Png { get; set; } = Array.Empty<byte>();
@@ -47,14 +54,7 @@ public static class ProjectArchive
         using var ms = new MemoryStream();
         using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
         {
-            for (int i = 0; i < doc.Snips.Count; i++)
-            {
-                SnipRecord s = doc.Snips[i];
-                s.File = $"snips/{i + 1:0000}.png";
-                // PNG data is already compressed; storing avoids wasting time on it.
-                using Stream e = zip.CreateEntry(s.File, CompressionLevel.NoCompression).Open();
-                e.Write(s.Png);
-            }
+            WriteSnips(zip, doc.Snips, "snips/");
             using Stream m = zip.CreateEntry(ManifestName, CompressionLevel.Optimal).Open();
             JsonSerializer.Serialize(m, doc, Json);
         }
@@ -70,15 +70,36 @@ public static class ProjectArchive
             doc = JsonSerializer.Deserialize<ProjectDocument>(m, Json) ?? throw new InvalidDataException("Project data is empty.");
         if (doc.FormatVersion > 1)
             throw new InvalidDataException("This file was saved by a newer version of Multi Snip. Please update to open it.");
-        foreach (SnipRecord s in doc.Snips)
+        ReadSnips(zip, doc.Snips);
+        return doc;
+    }
+
+    private static void WriteSnips(ZipArchive zip, List<SnipRecord> snips, string prefix)
+    {
+        for (int i = 0; i < snips.Count; i++)
+        {
+            SnipRecord s = snips[i];
+            s.File = $"{prefix}{i + 1:0000}.png";
+            // PNG data is already compressed; storing avoids wasting time on it.
+            using (Stream e = zip.CreateEntry(s.File, CompressionLevel.NoCompression).Open())
+                e.Write(s.Png);
+            if (s.Children != null) WriteSnips(zip, s.Children, $"{prefix}{i + 1:0000}/");
+        }
+    }
+
+    private static void ReadSnips(ZipArchive zip, List<SnipRecord> snips)
+    {
+        foreach (SnipRecord s in snips)
         {
             ZipArchiveEntry entry = zip.GetEntry(s.File) ?? throw new InvalidDataException($"Project data is missing {s.File}.");
-            using Stream e = entry.Open();
-            using var buf = new MemoryStream();
-            e.CopyTo(buf);
-            s.Png = buf.ToArray();
+            using (Stream e = entry.Open())
+            using (var buf = new MemoryStream())
+            {
+                e.CopyTo(buf);
+                s.Png = buf.ToArray();
+            }
+            if (s.Children != null) ReadSnips(zip, s.Children);
         }
-        return doc;
     }
 
     /// <summary>Stores colors as "#AARRGGBB" so project files stay readable.</summary>

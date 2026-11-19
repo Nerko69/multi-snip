@@ -4,6 +4,35 @@ All notable changes to Multi Snip (by WebProgress.AI). The version is set in
 `src/MultiSnip/MultiSnip.csproj` (`<Version>`, `<FileVersion>`, `<AssemblyVersion>`);
 bump it there and add an entry here for every release.
 
+## [1.4.0] - 2026-11-19
+
+### Added
+- **Crop and erase** (Area tool ⬚, key S): drag a rectangle on any snip, then **Crop** (Enter) or **Erase Area**
+  (Delete) — like Paint's Select. Drawings move with the picture; everything can be undone.
+- **Keep as one** (Ctrl+G): treats the current arrangement (or the selected snips) as one picture, so the next
+  snips join it in another layout — e.g. two snips stacked vertically, then a third beside them. **Ungroup**
+  (Ctrl+Shift+G) splits it again. Groups are saved in the editable PNG.
+- **Overlay** layout: the first snip is the background, the others go on top; drag them and resize them with the
+  corner handles (Shift = free proportions).
+- **Divider line** between snips (on/off, color, width).
+- **Single-snip view**: click a snip in the list to see and edit only that one; "All snips (combined)" is the
+  first entry of the list.
+- **Save each snip separately** (Ctrl+Shift+E): Name-01.png, Name-02.png… with their drawings.
+- **Watermark** (Image → Watermark…): text or image (logo), opacity, size, 9 positions or tiled, live preview.
+  **Bulk watermark** of a whole folder (copies go to a "watermarked" sub-folder; originals untouched).
+- **Image metadata** (Tools): view EXIF fields (camera, date, GPS, software, author…) and metadata blocks;
+  remove all (lossless for JPEG/PNG) or only the ticked fields.
+- **Whole page** capture made easier: the snip overlay highlights the window or window part under the mouse
+  (e.g. a browser's page) — click it to capture it; for Whole Page (Ctrl+Shift+R) it then scrolls and stitches
+  the entire page.
+- **Text size** (View → Text Size: Normal / Large / Extra large); Large is the new default.
+- About box text can be selected, with a "Copy all text" button.
+
+### Changed
+- Tabs are now large, high-contrast (active tab blue with a yellow accent), with × to close and + for a new tab.
+- Tool bar and menu buttons react to the first click even when the window was not active.
+- The "Scrolling" button is now called "Whole Page".
+
 ## [1.3.0] - 2026-11-10
 
 ### Added

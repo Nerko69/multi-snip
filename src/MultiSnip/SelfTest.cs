@@ -27,6 +27,10 @@ internal static class SelfTest
             HitTests();
             SaveOpenTests();
             UndoTests();
+            EditingTests();
+            WatermarkAndDividerTests();
+            MetadataTests();
+            WindowFinderTest();
             MainWindowSmokeTest();
         }
         catch (Exception ex)
@@ -186,6 +190,127 @@ internal static class SelfTest
         Check("second redo removes the snip again", p.Redo() && p.Snips.Count == 2 && !p.CanRedo);
     }
 
+    private static void EditingTests()
+    {
+        // Keep as one: 2 snips stacked vertically, then a 3rd beside them horizontally.
+        var p = new Project(new CombineOptions { Layout = CombineLayout.Vertical, Spacing = 0 });
+        p.Snips.Add(new SnipItem(Solid(100, 50, Color.Red), "t"));
+        p.Snips.Add(new SnipItem(Solid(100, 50, Color.Blue), "t"));
+        Check("group: 2 snips kept as one", p.Group(new[] { 0, 1 }) && p.Snips.Count == 1 && p.Snips[0].IsGroup && p.Snips[0].Image.Size == new Size(100, 100));
+        p.Snips.Add(new SnipItem(Solid(80, 100, Color.Green), "t"));
+        p.Options.Layout = CombineLayout.Horizontal;
+        using (Bitmap combo = p.RenderFinal())
+        {
+            Check("group: next snip joins horizontally", combo.Size == new Size(180, 100), combo.Size.ToString());
+            Check("group: stacked part kept (red over blue, green beside)",
+                combo.GetPixel(50, 25).ToArgb() == Color.Red.ToArgb() && combo.GetPixel(50, 75).ToArgb() == Color.Blue.ToArgb() && combo.GetPixel(140, 50).ToArgb() == Color.Green.ToArgb());
+        }
+        string path = Path.Combine(Path.GetTempPath(), "MultiSnip-selftest", "group.png");
+        ProjectFile.Save(p, path);
+        Project? back = ProjectFile.TryOpen(path);
+        Check("group survives save and reopen", back != null && back.Snips[0].IsGroup && back.Snips[0].Children!.Count == 2);
+        Check("ungroup restores the snips", back != null && back.Ungroup(0) && back.Snips.Count == 3 && back.Snips[0].Image.GetPixel(5, 5).ToArgb() == Color.Red.ToArgb());
+
+        // Crop and erase.
+        var c = new Project(new CombineOptions());
+        Bitmap src = Solid(200, 100, Color.White);
+        using (Graphics g = Graphics.FromImage(src)) g.FillRectangle(Brushes.Black, 50, 20, 30, 30);
+        c.Snips.Add(new SnipItem(src, "t", new List<Annotation> { new() { Kind = AnnotationKind.Text, Text = "x", Points = { new PointF(60, 30) } } }));
+        Check("crop: size", c.Crop(0, new Rectangle(50, 20, 100, 60)) && c.Snips[0].Image.Size == new Size(100, 60));
+        Check("crop: picture moved", c.Snips[0].Image.GetPixel(5, 5).ToArgb() == Color.Black.ToArgb() && c.Snips[0].Image.GetPixel(40, 5).ToArgb() == Color.White.ToArgb());
+        Check("crop: drawings move with the picture", c.Snips[0].Annotations[0].Points[0] == new PointF(10, 10));
+        Check("crop: undo brings the original back", c.Undo() && c.Snips[0].Image.Size == new Size(200, 100));
+        Check("erase area", c.EraseArea(0, new Rectangle(50, 20, 30, 30), Color.White) && c.Snips[0].Image.GetPixel(60, 30).ToArgb() == Color.White.ToArgb());
+        Check("erase area to transparent", c.EraseArea(0, new Rectangle(0, 0, 10, 10), Color.Transparent) && c.Snips[0].Image.GetPixel(5, 5).A == 0);
+
+        // Overlay: the 2nd snip goes on top of the 1st at its box.
+        var o = new Project(new CombineOptions { Layout = CombineLayout.Overlay });
+        o.Snips.Add(new SnipItem(Solid(300, 200, Color.White), "t"));
+        o.Snips.Add(new SnipItem(Solid(100, 100, Color.Red), "t", null, null, null, new RectangleF(20, 30, 50, 50)));
+        using (Bitmap ov = o.RenderFinal())
+        {
+            Check("overlay: canvas is the background size", ov.Size == new Size(300, 200));
+            Check("overlay: top snip resized and placed", ov.GetPixel(45, 55).ToArgb() == Color.Red.ToArgb() && ov.GetPixel(80, 55).ToArgb() == Color.White.ToArgb());
+        }
+    }
+
+    private static void WatermarkAndDividerTests()
+    {
+        var p = new Project(new CombineOptions { Layout = CombineLayout.Vertical, Spacing = 0, Divider = true, DividerWidth = 4, DividerColor = Color.Red });
+        p.Snips.Add(new SnipItem(Solid(100, 50, Color.White), "t"));
+        p.Snips.Add(new SnipItem(Solid(100, 50, Color.White), "t"));
+        using (Bitmap d = p.RenderFinal())
+            Check("divider line drawn between snips", d.Height == 104 && d.GetPixel(50, 51).ToArgb() == Color.Red.ToArgb() && d.GetPixel(50, 10).ToArgb() == Color.White.ToArgb(), d.Size.ToString());
+
+        p.Options.Divider = false;
+        p.Options.Watermark = new WatermarkOptions { Enabled = true, Text = "TEST", Color = Color.Black, Opacity = 100, SizePercent = 80, Position = WatermarkPosition.Center, Outline = false };
+        using (Bitmap w = p.RenderFinal())
+        {
+            int dark = 0;
+            for (int y = 0; y < w.Height; y++) for (int x = 0; x < w.Width; x++) if (w.GetPixel(x, y).R < 100) dark++;
+            Check("text watermark drawn", dark > 100, $"{dark} dark pixels");
+        }
+        using (Bitmap logo = Solid(20, 20, Color.Blue))
+        using (var ms = new MemoryStream())
+        {
+            logo.Save(ms, ImageFormat.Png);
+            p.Options.Watermark = new WatermarkOptions { Enabled = true, Kind = WatermarkKind.Image, ImagePng = ms.ToArray(), Opacity = 100, SizePercent = 50, Position = WatermarkPosition.Center };
+        }
+        using (Bitmap w = p.RenderFinal())
+            Check("image watermark drawn", w.GetPixel(50, 50).B > 200 && w.GetPixel(50, 50).R < 60, w.GetPixel(50, 50).ToString());
+
+        // Bulk: a folder of images gets watermarked copies, originals untouched.
+        string dir = Path.Combine(Path.GetTempPath(), "MultiSnip-selftest", "bulk");
+        if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        Directory.CreateDirectory(dir);
+        using (Bitmap a = Solid(200, 100, Color.White)) { a.Save(Path.Combine(dir, "a.png"), ImageFormat.Png); a.Save(Path.Combine(dir, "b.jpg"), ImageFormat.Jpeg); }
+        var errors = new List<string>();
+        int n = WatermarkRenderer.ApplyToFolder(dir, Path.Combine(dir, "watermarked"), p.Options.Watermark, errors);
+        Check("bulk watermark: all images done, originals kept", n == 2 && errors.Count == 0 &&
+            File.Exists(Path.Combine(dir, "watermarked", "a.png")) && File.Exists(Path.Combine(dir, "watermarked", "b.jpg")),
+            string.Join("; ", errors));
+    }
+
+    private static void MetadataTests()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "MultiSnip-selftest");
+        string jpg = Path.Combine(dir, "exif.jpg");
+        using (Bitmap b = Solid(64, 48, Color.Orange))
+        {
+            var item = (PropertyItem)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(PropertyItem));
+            item.Id = 0x013B; // Artist
+            item.Type = 2;
+            item.Value = System.Text.Encoding.ASCII.GetBytes("Secret Person\0");
+            item.Len = item.Value.Length;
+            b.SetPropertyItem(item);
+            b.Save(jpg, ImageFormat.Jpeg);
+        }
+        byte[] bytes = File.ReadAllBytes(jpg);
+        using (var img = Image.FromStream(new MemoryStream(bytes)))
+            Check("jpeg written with EXIF", img.PropertyIdList.Contains(0x013B));
+        byte[]? clean = MetadataTools.StripAll(bytes, out int removed);
+        Check("jpeg: EXIF removed", clean != null && removed >= 1);
+        if (clean != null)
+        {
+            using var img = Image.FromStream(new MemoryStream(clean));
+            Check("jpeg: still a valid picture without the EXIF field", img.Size == new Size(64, 48) && !img.PropertyIdList.Contains(0x013B));
+        }
+    }
+
+    private static void WindowFinderTest()
+    {
+        try
+        {
+            WindowFinder f = WindowFinder.Capture();
+            f.At(new Point(10, 10));
+            Check("window finder runs", true);
+        }
+        catch (Exception ex)
+        {
+            Check("window finder runs", false, ex.Message);
+        }
+    }
+
     private static void MainWindowSmokeTest()
     {
         Exception? uiError = null;
@@ -193,7 +318,19 @@ internal static class SelfTest
         Application.ThreadException += (_, e) => uiError ??= e.Exception;
         using var form = new MainForm();
         var timer = new System.Windows.Forms.Timer { Interval = 1500 };
-        timer.Tick += (_, _) => { timer.Stop(); form.Close(); };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            try
+            {
+                foreach (string line in form.SelfTestExercise(Solid)) Check(line, true);
+            }
+            catch (Exception ex)
+            {
+                uiError ??= ex;
+            }
+            form.Close();
+        };
         form.Shown += (_, _) => timer.Start();
         Application.Run(form);
         Check("main window opens, lays out, paints and closes", uiError == null, uiError?.ToString() ?? "");
