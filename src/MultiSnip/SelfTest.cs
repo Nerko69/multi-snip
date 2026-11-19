@@ -85,7 +85,8 @@ internal static class SelfTest
             Rectangle r = l.ImageRects[1];
             Color c = final.GetPixel(r.X + 20, r.Y + 20);
             Check($"render {layout}: drawing lands on its snip", c.R > 200 && c.G < 60 && c.B < 60, c.ToString());
-            Color bg = final.GetPixel(r.X + 115, r.Y + 5);
+            // Top-right corner of the snip, scaled with it (Overlay shrinks snips), away from its drawings.
+            Color bg = final.GetPixel(r.X + r.Width * 115 / 120, r.Y + r.Height * 5 / 80);
             Check($"render {layout}: snip pixels kept", bg.ToArgb() == Color.LightBlue.ToArgb(), bg.ToString());
         }
 
